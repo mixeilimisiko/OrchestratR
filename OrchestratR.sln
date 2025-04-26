@@ -1,9 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35919.96 d17.13
+VisualStudioVersion = 17.13.35919.96
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrchestratR", "OrchestratR\OrchestratR.csproj", "{AABE2C44-DBF7-4B9D-A7FF-467A1A25CB17}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DemoAPI", "DemoAPI\DemoAPI.csproj", "{19DBE638-74C6-422A-B7DE-B022C65CF4DA}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrchestratR.Tests", "OrchestratR.Tests\OrchestratR.Tests.csproj", "{F626AD74-50B8-49A4-A143-CE92DA8E2F61}"
 EndProject
@@ -17,10 +19,10 @@ Global
 		{AABE2C44-DBF7-4B9D-A7FF-467A1A25CB17}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{AABE2C44-DBF7-4B9D-A7FF-467A1A25CB17}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{AABE2C44-DBF7-4B9D-A7FF-467A1A25CB17}.Release|Any CPU.Build.0 = Release|Any CPU
-		{F626AD74-50B8-49A4-A143-CE92DA8E2F61}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{F626AD74-50B8-49A4-A143-CE92DA8E2F61}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{F626AD74-50B8-49A4-A143-CE92DA8E2F61}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{F626AD74-50B8-49A4-A143-CE92DA8E2F61}.Release|Any CPU.Build.0 = Release|Any CPU
+		{45F733C5-3A4D-4E17-9C24-FA03A6FD7427}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{45F733C5-3A4D-4E17-9C24-FA03A6FD7427}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{45F733C5-3A4D-4E17-9C24-FA03A6FD7427}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{45F733C5-3A4D-4E17-9C24-FA03A6FD7427}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
