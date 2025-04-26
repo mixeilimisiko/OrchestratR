@@ -27,6 +27,22 @@ namespace OrchestratR.Persistence
             return Task.CompletedTask;
         }
 
+
+        public Task UpdateStatusAsync(Guid sagaId, SagaStatus status)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task UpdateStepIndexAsync(Guid sagaId, int stepIndex)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task UpdateContextDataAsync(Guid sagaId, string contextData)
+        {
+            throw new NotImplementedException();
+        }
+
         public Task<SagaEntity?> FindByIdAsync(Guid sagaId)
         {
             _sagas.TryGetValue(sagaId, out SagaEntity? saga);

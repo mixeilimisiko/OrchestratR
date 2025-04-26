@@ -44,6 +44,21 @@ namespace OrchestratR.Persistence
             }
         }
 
+        public async Task UpdateStatusAsync(Guid sagaId, SagaStatus status)
+        {
+            throw new NotImplementedException();
+        }
+
+        public async Task UpdateStepIndexAsync(Guid sagaId, int stepIndex)
+        {
+            throw new NotImplementedException();
+        }
+
+        public async Task UpdateContextDataAsync(Guid sagaId, string contextData)
+        {
+            throw new NotImplementedException();
+        }
+
         public Task<SagaEntity?> FindByIdAsync(Guid sagaId)
         {
             return _db.Sagas.FirstOrDefaultAsync(s => s.SagaId == sagaId);
@@ -53,5 +68,6 @@ namespace OrchestratR.Persistence
         {
             return _db.Sagas.Where(s => s.Status == status).ToListAsync();
         }
+
     }
 }
