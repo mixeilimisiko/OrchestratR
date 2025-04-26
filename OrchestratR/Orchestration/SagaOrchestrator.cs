@@ -1,5 +1,7 @@
 ﻿
 using OrchestratR.Core;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace OrchestratR.Orchestration
 {
@@ -13,11 +15,30 @@ namespace OrchestratR.Orchestration
         private readonly List<ISagaStep<TContext>> _steps = new();
         private readonly ISagaStore _sagaStore;
 
+        private readonly JsonSerializerOptions _serializerOptions;
+        private JsonTypeInfo<TContext>? _cachedTypeInfo;
+
         public string SagaTypeName { get; } = typeof(TContext).Name;
 
         public SagaOrchestrator(ISagaStore sagaStore)
         {
             _sagaStore = sagaStore;
+
+            // Initialize serializer options
+            _serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+            };
+
+            // Precompute JsonTypeInfo during orchestrator construction
+            try
+            {
+                _cachedTypeInfo = (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+            }
+            catch (Exception)
+            {
+                _cachedTypeInfo = null;
+            }
         }
 
         /// <summary>Adds a step to the saga's execution sequence.</summary>
@@ -241,18 +262,37 @@ namespace OrchestratR.Orchestration
             }
         }
 
+        #region Serialization/Deserialization
+
         // Helper: Serialize context to JSON string
         private string SerializeContext(TContext context)
         {
-            // Use System.Text.Json with default options for simplicity
-            return System.Text.Json.JsonSerializer.Serialize<TContext>(context);
+            try
+            {
+                _cachedTypeInfo ??= (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+                return JsonSerializer.Serialize(context, _cachedTypeInfo!);
+            }
+            catch (Exception)
+            {
+                return JsonSerializer.Serialize(context, _serializerOptions); // fallback serialization
+            }
         }
 
         // Helper: Deserialize context from JSON string
         private TContext DeserializeContext(string jsonData)
         {
-            return System.Text.Json.JsonSerializer.Deserialize<TContext>(jsonData) ?? new TContext();
+            try
+            {
+                _cachedTypeInfo ??= (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+                return JsonSerializer.Deserialize(jsonData, _cachedTypeInfo!) ?? new TContext();
+            }
+            catch (Exception)
+            {
+                return JsonSerializer.Deserialize<TContext>(jsonData, _serializerOptions) ?? new TContext(); // fallback deserialization
+            }
         }
+
+        #endregion Serialization/Deserialization
     }
 
 }
