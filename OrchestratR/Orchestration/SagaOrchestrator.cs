@@ -12,7 +12,7 @@ namespace OrchestratR.Orchestration
     public class SagaOrchestrator<TContext> : ISagaOrchestrator
         where TContext : SagaContext, new()
     {
-        private readonly List<ISagaStep<TContext>> _steps = new();
+        private readonly List<ISagaStep<TContext>> _steps = [];
         private readonly ISagaStore _sagaStore;
 
         private readonly JsonSerializerOptions _serializerOptions;

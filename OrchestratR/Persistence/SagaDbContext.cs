@@ -16,6 +16,8 @@ namespace OrchestratR.Persistence
             modelBuilder.Entity<SagaEntity>()
                 .Property(e => e.Status).HasConversion<string>();
             // Storing the enum as string for readability, might change to int for performance later
+            modelBuilder.Entity<SagaEntity>()
+                .Property(e => e.RowVersion).IsRowVersion();
         }
     }
 }
