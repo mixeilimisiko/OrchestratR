@@ -9,15 +9,24 @@ namespace OrchestratR.Persistence
         public SagaDbContext(DbContextOptions<SagaDbContext> options) : base(options) { }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<SagaEntity>()
-                .HasKey(e => e.SagaId);
-            // configure the ContextData to be stored as JSON in a column if using a database that supports JSON.
-            // for simplicity, take a text column.
-            modelBuilder.Entity<SagaEntity>()
-                .Property(e => e.Status).HasConversion<string>();
-            // Storing the enum as string for readability, might change to int for performance later
-            modelBuilder.Entity<SagaEntity>()
-                .Property(e => e.RowVersion).IsRowVersion();
+            var sagaEntity = modelBuilder.Entity<SagaEntity>();
+
+            sagaEntity.HasKey(e => e.SagaId);
+ 
+            // Configure properties
+            sagaEntity.Property(e => e.Status)
+                .HasConversion<string>()
+                .HasMaxLength(50); // Storing enum as string with max length
+
+            sagaEntity.Property(e => e.SagaType)
+                .HasMaxLength(255)
+                .IsRequired();
+
+            sagaEntity.Property(e => e.ContextData)
+                .HasColumnType("nvarchar(max)");
+
+            sagaEntity.Property(e => e.RowVersion)
+                .IsRowVersion();
         }
     }
 }
