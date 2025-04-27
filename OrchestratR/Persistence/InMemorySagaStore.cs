@@ -30,17 +30,41 @@ namespace OrchestratR.Persistence
 
         public Task UpdateStatusAsync(Guid sagaId, SagaStatus status)
         {
-            throw new NotImplementedException();
+            if (_sagas.TryGetValue(sagaId, out var saga))
+            {
+                saga.Status = status;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Saga with ID {sagaId} not found.");
+            }
+            return Task.CompletedTask;
         }
 
         public Task UpdateStepIndexAsync(Guid sagaId, int stepIndex)
         {
-            throw new NotImplementedException();
+            if (_sagas.TryGetValue(sagaId, out var saga))
+            {
+                saga.CurrentStepIndex = stepIndex;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Saga with ID {sagaId} not found.");
+            }
+            return Task.CompletedTask;
         }
 
         public Task UpdateContextDataAsync(Guid sagaId, string contextData)
         {
-            throw new NotImplementedException();
+            if (_sagas.TryGetValue(sagaId, out var saga))
+            {
+                saga.ContextData = contextData;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Saga with ID {sagaId} not found.");
+            }
+            return Task.CompletedTask;
         }
 
         public Task<SagaEntity?> FindByIdAsync(Guid sagaId)
