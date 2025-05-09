@@ -3,7 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using OrchestratR.Core;
 using OrchestratR.Orchestration;
 
-namespace OrchestratR.Builder
+namespace OrchestratR.Registration
 {
     public class SagaBuilder<TContext> where TContext : SagaContext, new()
     {

@@ -1,8 +1,7 @@
-﻿
-using OrchestratR.Core;
+﻿using OrchestratR.Core;
 using OrchestratR.Orchestration;
 
-namespace OrchestratR.Builder
+namespace OrchestratR.Registration
 {
     public class StepBuilder<TContext, TStep> where TStep : ISagaStep<TContext> where TContext : SagaContext
     {
