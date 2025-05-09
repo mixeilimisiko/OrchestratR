@@ -1,8 +1,9 @@
 using DemoAPI.OrderSaga;
+using Microsoft.Extensions.DependencyInjection;
 using OrchestratR.Core;
-using OrchestratR.Orchestration;
 using OrchestratR.Persistence;
 using OrchestratR.Recovery;
+using OrchestratR.Registration;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,21 +17,12 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.AddSingleton<ISagaStore, InMemorySagaStore>();
 
-builder.Services.AddSingleton<ReserveInventoryStep>();
-builder.Services.AddSingleton<ProcessPaymentStep>();
-builder.Services.AddSingleton<ShipOrderStep>();
-builder.Services.AddSingleton<SagaOrchestrator<OrderSagaContext>>(provider =>
-{
-    var store = provider.GetRequiredService<ISagaStore>();
-    var orch = new SagaOrchestrator<OrderSagaContext>(store);
-    // Manually add steps in desired order:
-    orch.AddStep(provider.GetRequiredService<ReserveInventoryStep>());
-    orch.AddStep(provider.GetRequiredService<ProcessPaymentStep>());
-    orch.AddStep(provider.GetRequiredService<ShipOrderStep>());
-    return orch;
-});
+builder.Services.AddSaga<OrderSagaContext>()
+                .WithStep<ReserveInventoryStep>(x =>x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
+                .WithStep<ProcessPaymentStep>(x => x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
+                .WithStep<ShipOrderStep>(x => x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
+                .Build();
 
-builder.Services.AddSingleton<ISagaOrchestrator>(sp => sp.GetRequiredService<SagaOrchestrator<OrderSagaContext>>());
 builder.Services.AddHostedService<SagaRecoveryService>();
 
 var app = builder.Build();
