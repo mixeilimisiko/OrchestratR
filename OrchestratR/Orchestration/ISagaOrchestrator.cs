@@ -8,6 +8,6 @@ namespace OrchestratR.Orchestration
     {
         string SagaTypeName { get; }
 
-        Task ResumeAsync(Core.SagaEntity entity);
+        Task ResumeAsync(Core.SagaEntity sagaEntity);
     }
 }

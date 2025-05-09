@@ -1,4 +1,6 @@
 ﻿
+using System.ComponentModel.DataAnnotations;
+
 namespace OrchestratR.Core
 {
     /// <summary>
@@ -12,6 +14,7 @@ namespace OrchestratR.Core
         public int CurrentStepIndex { get; set; }       // Index of the next step to execute (or current step in progress)
         public string ContextData { get; set; } = "";   // JSON serialized SagaContext
 
-        // Might add timestamp/concrurrency token later 
+        [Timestamp]  // concurrency token
+        public byte[] RowVersion { get; set; } = [];
     }
 }

@@ -7,11 +7,11 @@ namespace OrchestratR.Tests.Persistence
     /// <summary>
     /// Tests for EfCoreSagaStore
     /// </summary>
-    public class EfCoreSagaStoreTests : IClassFixture<EfCoreSagaStoreFixture>
+    public class EfCoreSagaStoreInMemoryTests : IClassFixture<EfCoreSagaStoreFixture>
     {
         private readonly EfCoreSagaStoreFixture _fixture;
 
-        public EfCoreSagaStoreTests(EfCoreSagaStoreFixture fixture)
+        public EfCoreSagaStoreInMemoryTests(EfCoreSagaStoreFixture fixture)
         {
             _fixture = fixture;
         }

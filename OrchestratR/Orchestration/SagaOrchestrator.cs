@@ -1,5 +1,8 @@
-﻿
+﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using OrchestratR.Core;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace OrchestratR.Orchestration
 {
@@ -10,21 +13,40 @@ namespace OrchestratR.Orchestration
     public class SagaOrchestrator<TContext> : ISagaOrchestrator
         where TContext : SagaContext, new()
     {
-        private readonly List<ISagaStep<TContext>> _steps = new();
+        //private readonly List<ISagaStep<TContext>> _steps = [];
+        private readonly SagaConfig<TContext> _config;
+
+        private readonly IServiceProvider _provider;
         private readonly ISagaStore _sagaStore;
+
+        private readonly JsonSerializerOptions _serializerOptions;
+        private JsonTypeInfo<TContext>? _cachedTypeInfo;
 
         public string SagaTypeName { get; } = typeof(TContext).Name;
 
-        public SagaOrchestrator(ISagaStore sagaStore)
+        public SagaOrchestrator(IOptions<SagaConfig<TContext>> configOptions,
+                                IServiceProvider provider,
+                                ISagaStore sagaStore)
         {
+            _config = configOptions.Value;
+            _provider = provider;
             _sagaStore = sagaStore;
-        }
 
-        /// <summary>Adds a step to the saga's execution sequence.</summary>
-        public SagaOrchestrator<TContext> AddStep(ISagaStep<TContext> step)
-        {
-            _steps.Add(step);
-            return this; // Enable chaining
+            // Initialize serializer options
+            _serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+            };
+
+            // Precompute JsonTypeInfo during orchestrator construction
+            try
+            {
+                _cachedTypeInfo = (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+            }
+            catch (Exception)
+            {
+                _cachedTypeInfo = null;
+            }
         }
 
         /// <summary>Begins execution of a new saga with the given context.</summary>
@@ -49,7 +71,7 @@ namespace OrchestratR.Orchestration
             // 2. Execute steps in order until done, awaiting, or failure.
             try
             {
-                for (int i = 0; i < _steps.Count; i++)
+                for (int i = 0; i < _config.Steps.Count; i++)
                 {
                     sagaEntity.CurrentStepIndex = i;
                     // Persist the index change (so recovery knows which step we were on)
@@ -58,7 +80,11 @@ namespace OrchestratR.Orchestration
                     // Load context object (it might have been updated in the previous loop iteration)
                     context = DeserializeContext(sagaEntity.ContextData);
 
-                    var step = _steps[i];
+                    var stepDef = _config.Steps[i];
+                    var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+
+                    // TODO: in stepDef precompute timeout and retry policies and execute it
+                    // instead of just awaiting step.ExecuteAsync
                     SagaStepStatus result = await step.ExecuteAsync(context);
 
                     // Save the possibly updated context after step execution
@@ -77,7 +103,7 @@ namespace OrchestratR.Orchestration
 
                 // All steps completed successfully
                 sagaEntity.Status = SagaStatus.Completed;
-                sagaEntity.CurrentStepIndex = _steps.Count; // mark index past the last step
+                sagaEntity.CurrentStepIndex = _config.Steps.Count; // mark index past the last step
                 sagaEntity.ContextData = SerializeContext(context);
                 await _sagaStore.UpdateAsync(sagaEntity);
             }
@@ -100,7 +126,11 @@ namespace OrchestratR.Orchestration
                     {
                         // Load latest context (it might have been modified by partial execution or prior compensation)
                         context = DeserializeContext(sagaEntity.ContextData);
-                        await _steps[j].CompensateAsync(context);
+                        var stepDef = _config.Steps[j];
+                        var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+                        // TODO: Think if we need to pass the exception to the compensation step
+                        // TODO: Think if we need to apply any policies during compensation
+                        await step.CompensateAsync(context);
                         // Optionally update context if compensation changes it, then save
                         sagaEntity.ContextData = SerializeContext(context);
                         await _sagaStore.UpdateAsync(sagaEntity);
@@ -130,7 +160,7 @@ namespace OrchestratR.Orchestration
         /// <summary>
         /// Resumes an incomplete saga (e.g., Awaiting or interrupted) from a stored SagaEntity.
         /// </summary>
-        public async Task ResumeAsync(Core.SagaEntity sagaEntity)
+        public async Task ResumeAsync(SagaEntity sagaEntity)
         {
             // Reconstruct context from stored data
             var context = DeserializeContext(sagaEntity.ContextData);
@@ -144,7 +174,7 @@ namespace OrchestratR.Orchestration
                 sagaEntity.CurrentStepIndex++;
                 await _sagaStore.UpdateAsync(sagaEntity);
             }
-            else if (sagaEntity.Status == Core.SagaStatus.InProgress)
+            else if (sagaEntity.Status == SagaStatus.InProgress)
             {
                 // Saga was in the middle of execution when interrupted (crash scenario).
                 // We will resume from the CurrentStepIndex.
@@ -162,14 +192,16 @@ namespace OrchestratR.Orchestration
                 try
                 {
                     // Start from the current step index
-                    for (int i = sagaEntity.CurrentStepIndex; i < _steps.Count; i++)
+                    for (int i = sagaEntity.CurrentStepIndex; i < _config.Steps.Count; i++)
                     {
                         sagaEntity.CurrentStepIndex = i;
                         await _sagaStore.UpdateAsync(sagaEntity);
 
                         // Ensure we have latest context (could have been modified externally or earlier)
                         context = DeserializeContext(sagaEntity.ContextData);
-                        var step = _steps[i];
+                        var stepDef = _config.Steps[i];
+                        var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+
                         SagaStepStatus result = await step.ExecuteAsync(context);
                         sagaEntity.ContextData = SerializeContext(context);
 
@@ -184,7 +216,7 @@ namespace OrchestratR.Orchestration
 
                     // If we exit loop normally, saga now completed
                     sagaEntity.Status = SagaStatus.Completed;
-                    sagaEntity.CurrentStepIndex = _steps.Count;
+                    sagaEntity.CurrentStepIndex = _config.Steps.Count;
                     sagaEntity.ContextData = SerializeContext(context);
                     await _sagaStore.UpdateAsync(sagaEntity);
                 }
@@ -200,7 +232,9 @@ namespace OrchestratR.Orchestration
                         try
                         {
                             context = DeserializeContext(sagaEntity.ContextData);
-                            await _steps[j].CompensateAsync(context);
+                            var stepDef = _config.Steps[j];
+                            var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+                            await step.CompensateAsync(context);
                             sagaEntity.ContextData = SerializeContext(context);
                             await _sagaStore.UpdateAsync(sagaEntity);
                         }
@@ -220,13 +254,15 @@ namespace OrchestratR.Orchestration
                 // Find which step was last compensated (if any).
                 // For simplicity, assume compensation starts from last executed step if not already done.
                 int lastIndexToCompensate = sagaEntity.CurrentStepIndex - 1;
-                if (lastIndexToCompensate < 0) lastIndexToCompensate = _steps.Count - 1;
+                if (lastIndexToCompensate < 0) return; //lastIndexToCompensate = _config.Steps.Count - 1;
                 for (int j = lastIndexToCompensate; j >= 0; j--)
                 {
                     try
                     {
                         context = DeserializeContext(sagaEntity.ContextData);
-                        await _steps[j].CompensateAsync(context);
+                        var stepDef = _config.Steps[j];
+                        var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+                        await step.CompensateAsync(context);
                         sagaEntity.ContextData = SerializeContext(context);
                         await _sagaStore.UpdateAsync(sagaEntity);
                     }
@@ -241,18 +277,36 @@ namespace OrchestratR.Orchestration
             }
         }
 
+        #region Serialization/Deserialization
+
         // Helper: Serialize context to JSON string
         private string SerializeContext(TContext context)
         {
-            // Use System.Text.Json with default options for simplicity
-            return System.Text.Json.JsonSerializer.Serialize<TContext>(context);
+            try
+            {
+                _cachedTypeInfo ??= (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+                return JsonSerializer.Serialize(context, _cachedTypeInfo!);
+            }
+            catch (Exception)
+            {
+                return JsonSerializer.Serialize(context, _serializerOptions); // fallback serialization
+            }
         }
 
         // Helper: Deserialize context from JSON string
         private TContext DeserializeContext(string jsonData)
         {
-            return System.Text.Json.JsonSerializer.Deserialize<TContext>(jsonData) ?? new TContext();
+            try
+            {
+                _cachedTypeInfo ??= (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+                return JsonSerializer.Deserialize(jsonData, _cachedTypeInfo!) ?? new TContext();
+            }
+            catch (Exception)
+            {
+                return JsonSerializer.Deserialize<TContext>(jsonData, _serializerOptions) ?? new TContext(); // fallback deserialization
+            }
         }
-    }
 
+        #endregion Serialization/Deserialization
+    }
 }

@@ -148,6 +148,101 @@ namespace OrchestratR.Tests.Persistence
             Assert.Contains(completedSagas, s => s.SagaId == saga3.SagaId);
         }
 
+        [Fact]
+        public async Task UpdateStatusAsync_ShouldUpdateSagaStatus()
+        {
+            // Arrange
+            var store = new InMemorySagaStore();
+            var saga = CreateTestSaga(SagaStatus.NotStarted);
+            await store.SaveAsync(saga);
+
+            // Act
+            await store.UpdateStatusAsync(saga.SagaId, SagaStatus.InProgress);
+
+            // Assert
+            var updatedSaga = await store.FindByIdAsync(saga.SagaId);
+            Assert.NotNull(updatedSaga);
+            Assert.Equal(SagaStatus.InProgress, updatedSaga.Status);
+        }
+
+        [Fact]
+        public async Task UpdateStatusAsync_ShouldThrowException_WhenSagaDoesNotExist()
+        {
+            // Arrange
+            var store = new InMemorySagaStore();
+            var nonExistentId = Guid.NewGuid();
+
+            // Act & Assert
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            {
+                await store.UpdateStatusAsync(nonExistentId, SagaStatus.Completed);
+            });
+        }
+
+        [Fact]
+        public async Task UpdateStepIndexAsync_ShouldUpdateSagaStepIndex()
+        {
+            // Arrange
+            var store = new InMemorySagaStore();
+            var saga = CreateTestSaga();
+            await store.SaveAsync(saga);
+
+            // Act
+            await store.UpdateStepIndexAsync(saga.SagaId, 5);
+
+            // Assert
+            var updatedSaga = await store.FindByIdAsync(saga.SagaId);
+            Assert.NotNull(updatedSaga);
+            Assert.Equal(5, updatedSaga.CurrentStepIndex);
+        }
+
+        [Fact]
+        public async Task UpdateStepIndexAsync_ShouldThrowException_WhenSagaDoesNotExist()
+        {
+            // Arrange
+            var store = new InMemorySagaStore();
+            var nonExistentId = Guid.NewGuid();
+
+            // Act & Assert
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            {
+                await store.UpdateStepIndexAsync(nonExistentId, 3);
+            });
+        }
+
+        [Fact]
+        public async Task UpdateContextDataAsync_ShouldUpdateSagaContextData()
+        {
+            // Arrange
+            var store = new InMemorySagaStore();
+            var saga = CreateTestSaga();
+            await store.SaveAsync(saga);
+
+            // Act
+            var newContextData = "{\"updatedData\": \"newValue\"}";
+            await store.UpdateContextDataAsync(saga.SagaId, newContextData);
+
+            // Assert
+            var updatedSaga = await store.FindByIdAsync(saga.SagaId);
+            Assert.NotNull(updatedSaga);
+            Assert.Equal(newContextData, updatedSaga.ContextData);
+        }
+
+        [Fact]
+        public async Task UpdateContextDataAsync_ShouldThrowException_WhenSagaDoesNotExist()
+        {
+            // Arrange
+            var store = new InMemorySagaStore();
+            var nonExistentId = Guid.NewGuid();
+
+            // Act & Assert
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            {
+                await store.UpdateContextDataAsync(nonExistentId, "{\"key\": \"value\"}");
+            });
+        }
+
+
         private SagaEntity CreateTestSaga(SagaStatus status = SagaStatus.NotStarted)
         {
             return new SagaEntity

@@ -27,6 +27,46 @@ namespace OrchestratR.Persistence
             return Task.CompletedTask;
         }
 
+
+        public Task UpdateStatusAsync(Guid sagaId, SagaStatus status)
+        {
+            if (_sagas.TryGetValue(sagaId, out var saga))
+            {
+                saga.Status = status;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Saga with ID {sagaId} not found.");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateStepIndexAsync(Guid sagaId, int stepIndex)
+        {
+            if (_sagas.TryGetValue(sagaId, out var saga))
+            {
+                saga.CurrentStepIndex = stepIndex;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Saga with ID {sagaId} not found.");
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateContextDataAsync(Guid sagaId, string contextData)
+        {
+            if (_sagas.TryGetValue(sagaId, out var saga))
+            {
+                saga.ContextData = contextData;
+            }
+            else
+            {
+                throw new InvalidOperationException($"Saga with ID {sagaId} not found.");
+            }
+            return Task.CompletedTask;
+        }
+
         public Task<SagaEntity?> FindByIdAsync(Guid sagaId)
         {
             _sagas.TryGetValue(sagaId, out SagaEntity? saga);
