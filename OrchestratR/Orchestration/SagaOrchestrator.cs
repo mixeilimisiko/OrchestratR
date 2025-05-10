@@ -13,7 +13,6 @@ namespace OrchestratR.Orchestration
     public class SagaOrchestrator<TContext> : ISagaOrchestrator
         where TContext : SagaContext, new()
     {
-        //private readonly List<ISagaStep<TContext>> _steps = [];
         private readonly SagaConfig<TContext> _config;
 
         private readonly IServiceProvider _provider;
@@ -81,11 +80,8 @@ namespace OrchestratR.Orchestration
                     context = DeserializeContext(sagaEntity.ContextData);
 
                     var stepDef = _config.Steps[i];
-                    var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
 
-                    // TODO: in stepDef precompute timeout and retry policies and execute it
-                    // instead of just awaiting step.ExecuteAsync
-                    SagaStepStatus result = await step.ExecuteAsync(context);
+                    SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context);
 
                     // Save the possibly updated context after step execution
                     sagaEntity.ContextData = SerializeContext(context);
@@ -174,17 +170,17 @@ namespace OrchestratR.Orchestration
                 sagaEntity.CurrentStepIndex++;
                 await _sagaStore.UpdateAsync(sagaEntity);
             }
-            else if (sagaEntity.Status == SagaStatus.InProgress)
-            {
-                // Saga was in the middle of execution when interrupted (crash scenario).
-                // We will resume from the CurrentStepIndex.
-                // Possibly re-run the current step if it didn't finish, assuming idempotency.
-            }
-            else if (sagaEntity.Status == SagaStatus.Compensating)
-            {
-                // Saga was in the middle of compensation when interrupted.
-                // We will continue compensating remaining steps.
-            }
+            //else if (sagaEntity.Status == SagaStatus.InProgress)
+            //{
+            //    // Saga was in the middle of execution when interrupted (crash scenario).
+            //    // We will resume from the CurrentStepIndex.
+            //    // Possibly re-run the current step if it didn't finish, assuming idempotency.
+            //}
+            //else if (sagaEntity.Status == SagaStatus.Compensating)
+            //{
+            //    // Saga was in the middle of compensation when interrupted.
+            //    // We will continue compensating remaining steps.
+            //}
 
             // Resume forward execution if applicable
             if (sagaEntity.Status == SagaStatus.InProgress)
@@ -200,9 +196,9 @@ namespace OrchestratR.Orchestration
                         // Ensure we have latest context (could have been modified externally or earlier)
                         context = DeserializeContext(sagaEntity.ContextData);
                         var stepDef = _config.Steps[i];
-                        var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+                        //var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
 
-                        SagaStepStatus result = await step.ExecuteAsync(context);
+                        SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context);
                         sagaEntity.ContextData = SerializeContext(context);
 
                         if (result == SagaStepStatus.Awaiting)
@@ -276,6 +272,18 @@ namespace OrchestratR.Orchestration
                 await _sagaStore.UpdateAsync(sagaEntity);
             }
         }
+
+        #region StepExecution
+        // Helper: Execute a step with its associated policy (if any)
+        private Task<SagaStepStatus> ExecuteStepWithPolicyAsync(SagaStepDefinition<TContext> stepDef, TContext context)
+        {
+            var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+
+            return stepDef.PolicyExecutor is not null
+                ? stepDef.PolicyExecutor.ExecuteAsync(() => step.ExecuteAsync(context))
+                : step.ExecuteAsync(context);
+        }
+        #endregion StepExecution
 
         #region Serialization/Deserialization
 
