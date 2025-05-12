@@ -28,7 +28,12 @@ namespace OrchestratR.Registration
             {
                 var stepBuilder = new StepBuilder<TContext, TStep>(stepDef);
                 configure(stepBuilder);  // e.g., apply .WithRetry or .WithTimeout
+
+                // Compute policy and set it for this stepDefinition
+                var policy = new PollyStepPolicyExecutor<TContext>(stepDef.MaxRetries, stepDef.Timeout);
+                stepDef.PolicyExecutor = policy;
             }
+          
             // Add the step definition to the saga's list (order is preserved)
             _steps.Add(stepDef);
             return this;

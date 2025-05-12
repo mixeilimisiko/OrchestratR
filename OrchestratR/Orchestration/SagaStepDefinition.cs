@@ -8,6 +8,8 @@ namespace OrchestratR.Orchestration
         public int MaxRetries { get; set; }
         public TimeSpan? Timeout { get; set; }
 
+        public IStepPolicyExecutor<TContext>? PolicyExecutor { get; set; }
+
         public SagaStepDefinition(Type stepType)
         {
             StepType = stepType;
