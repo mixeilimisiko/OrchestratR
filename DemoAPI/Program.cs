@@ -1,4 +1,5 @@
 using DemoAPI.OrderSaga;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OrchestratR.Core;
 using OrchestratR.Persistence;
@@ -15,7 +16,12 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 
-builder.Services.AddSingleton<ISagaStore, InMemorySagaStore>();
+builder.Services.AddSagaInfrastructure(options =>
+{
+    options.UseEfCore(db =>
+        db.UseSqlServer("Server=DESKTOP-NBMOCEP\\SQLEXPRESS01; Database=SagaDb;Trusted_Connection=True;Encrypt=False",
+                        x => x.MigrationsAssembly(SagaInfrastructureOptions.GetMigrationsAssembly())));
+});
 
 builder.Services.AddSaga<OrderSagaContext>()
                 .WithStep<ReserveInventoryStep>(x =>x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
