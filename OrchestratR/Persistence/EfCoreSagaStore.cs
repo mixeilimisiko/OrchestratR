@@ -54,6 +54,10 @@ namespace OrchestratR.Persistence
             }
         }
 
+        /// <summary>
+        /// Partial update: Updates only the status field directly via SQL.
+        /// ⚠ Bypasses EF tracking and RowVersion concurrency protection.
+        /// </summary>
         public async Task UpdateStatusAsync(Guid sagaId, SagaStatus status)
         {
             // Execute direct SQL update without loading the entity first
@@ -80,6 +84,10 @@ namespace OrchestratR.Persistence
             }
         }
 
+        /// <summary>
+        /// Partial update: Updates only the step index.
+        /// ⚠ Does not enforce RowVersion matching — use cautiously.
+        /// </summary>
         public async Task UpdateStepIndexAsync(Guid sagaId, int stepIndex)
         {
             var trackedSaga = _dbContext.Sagas.Local.FirstOrDefault(s => s.SagaId == sagaId);
@@ -105,6 +113,10 @@ namespace OrchestratR.Persistence
             }
         }
 
+        /// <summary>
+        /// Partial update: Updates only the context field.
+        /// ⚠ Does not track RowVersion or change detection.
+        /// </summary>
         public async Task UpdateContextDataAsync(Guid sagaId, string contextData)
         {
             var trackedSaga = _dbContext.Sagas.Local.FirstOrDefault(s => s.SagaId == sagaId);
