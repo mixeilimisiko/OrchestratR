@@ -48,7 +48,7 @@ namespace OrchestratR.Orchestration
             //catch (Exception)
             //{
             //    _cachedTypeInfo = null;
-            }
+            //}
         }
         /// <summary>Begins execution of a new saga with the given context.</summary>
         public async Task<Guid> StartAsync(TContext context)
