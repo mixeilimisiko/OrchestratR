@@ -4,6 +4,9 @@ using OrchestratR.Core;
 using OrchestratR.Orchestration;
 using System.Text.Json.Serialization.Metadata;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using OrchestratR.Recovery;
 
 namespace OrchestratR.Registration
 {
@@ -11,6 +14,7 @@ namespace OrchestratR.Registration
     {
         private readonly IServiceCollection _services;
         private readonly List<SagaStepDefinition<TContext>> _steps = [];
+        private bool _enableRecovery;
 
         internal SagaBuilder(IServiceCollection services)
         {
@@ -38,6 +42,12 @@ namespace OrchestratR.Registration
           
             // Add the step definition to the saga's list (order is preserved)
             _steps.Add(stepDef);
+            return this;
+        }
+
+        public SagaBuilder<TContext> WithRecovery()
+        {
+            _enableRecovery = true;
             return this;
         }
 
@@ -79,6 +89,12 @@ namespace OrchestratR.Registration
 
             // Also register it as ISagaOrchestrator for non-generic lookup (same instance in scope)
             _services.AddScoped<ISagaOrchestrator>(sp => sp.GetRequiredService<SagaOrchestrator<TContext>>());
+
+            if (_enableRecovery)
+            {
+                // Register the recovery service *only once* if not already registered
+                _services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, SagaRecoveryService>());
+            }
         }
     }
 }
