@@ -2,6 +2,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using OrchestratR.Core;
 using OrchestratR.Orchestration;
+using System.Text.Json.Serialization.Metadata;
+using System.Text.Json;
 
 namespace OrchestratR.Registration
 {
@@ -41,16 +43,35 @@ namespace OrchestratR.Registration
 
         public void Build()
         {
-            // Create saga configuration from the collected step definitions
+            var serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+            };
+
+            JsonTypeInfo<TContext>? contextTypeInfo;
+            try
+            {
+                contextTypeInfo = (JsonTypeInfo<TContext>?)serializerOptions.GetTypeInfo(typeof(TContext));
+            }
+            catch
+            {
+                contextTypeInfo = null;
+            }
+
+            // Create saga configuration from the collected step definitions with serializer options
             var sagaConfig = new SagaConfig<TContext>
             {
-                Steps = _steps
+                Steps = _steps,
+                SerializerOptions = serializerOptions,
+                ContextTypeInfo = contextTypeInfo
             };
 
             // Register the saga config as IOptions<T> so it can be injected
             _services.Configure<SagaConfig<TContext>>(options =>
             {
                 options.Steps = sagaConfig.Steps;
+                options.SerializerOptions = sagaConfig.SerializerOptions;
+                options.ContextTypeInfo = sagaConfig.ContextTypeInfo;
             });
 
             // Register the SagaOrchestrator for this TContext as scoped
