@@ -29,7 +29,7 @@ namespace OrchestratR.Orchestration
             }
         }
 
-        public Task<SagaStepStatus> ExecuteAsync(Func<Task<SagaStepStatus>> stepExecution)
-            => _policy.ExecuteAsync(stepExecution);
+        public Task<SagaStepStatus> ExecuteAsync(Func<CancellationToken, Task<SagaStepStatus>> stepExecution, CancellationToken cancellationToken)
+              => _policy.ExecuteAsync(ct => stepExecution(ct), cancellationToken);
     }
 }
