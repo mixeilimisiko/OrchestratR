@@ -4,7 +4,6 @@ using OrchestratR.Core;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
-// TODO: Apply Targeted Updates
 // TODO: Refactor for better readability and maintainability
 namespace OrchestratR.Orchestration
 {
@@ -23,6 +22,8 @@ namespace OrchestratR.Orchestration
         private readonly JsonSerializerOptions _serializerOptions;
         private JsonTypeInfo<TContext>? _cachedTypeInfo;
 
+        private const int NotStartedStepIndex = -1;
+
         public string SagaTypeName { get; } = typeof(TContext).Name;
 
         public SagaOrchestrator(IOptions<SagaConfig<TContext>> configOptions,
@@ -33,23 +34,22 @@ namespace OrchestratR.Orchestration
             _provider = provider;
             _sagaStore = sagaStore;
 
-            // Initialize serializer options
-            _serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-            {
-                TypeInfoResolver = new DefaultJsonTypeInfoResolver()
-            };
+            //// Initialize serializer options
+            //_serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            //{
+            //    TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+            //};
 
-            // Precompute JsonTypeInfo during orchestrator construction
-            try
-            {
-                _cachedTypeInfo = (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
-            }
-            catch (Exception)
-            {
-                _cachedTypeInfo = null;
-            }
+            //// Precompute JsonTypeInfo during orchestrator construction
+            //try
+            //{
+            //    _cachedTypeInfo = (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
+            //}
+            //catch (Exception)
+            //{
+            //    _cachedTypeInfo = null;
+            //}
         }
-
         /// <summary>Begins execution of a new saga with the given context.</summary>
         public async Task<Guid> StartAsync(TContext context)
         {
@@ -60,7 +60,7 @@ namespace OrchestratR.Orchestration
                 SagaId = sagaId,
                 SagaType = this.SagaTypeName,
                 Status = SagaStatus.NotStarted,
-                CurrentStepIndex = 0,
+                CurrentStepIndex = NotStartedStepIndex,
                 ContextData = SerializeContext(context)
             };
             await _sagaStore.SaveAsync(sagaEntity);
@@ -72,6 +72,11 @@ namespace OrchestratR.Orchestration
             // 2. Execute steps in order until done, awaiting, or failure.
             try
             {
+                // since exception or transient failure or anything like that
+                // is more likely to happen before and during the ExecuteStepWithPolicyAsync
+                // we first presist current step index which indicates what step we have not executed yet,
+                // though we still have risk of executing same step twice if orchestrator breaks 
+                // after step execution but before next iteration starts.
                 for (int i = 0; i < _config.Steps.Count; i++)
                 {
                     sagaEntity.CurrentStepIndex = i;
@@ -85,7 +90,14 @@ namespace OrchestratR.Orchestration
 
                     SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context);
 
-                    // Save the possibly updated context after step execution
+                    // save the possibly updated context after step execution
+                    // we keep ContextData in memory for a small amount of time
+                    // it will be persisted either with incremented CurrentStepIndex on next iteration
+                    // or with status in case of asynchronous step.
+
+                    // Saving it separately won't avoid the risk of the situation where
+                    // step execution is successful but persisting the context fails, it will just
+                    // reduce the risk a very little amount which makes it not worth it to do.
                     sagaEntity.ContextData = SerializeContext(context);
 
                     if (result == SagaStepStatus.Awaiting)
@@ -153,6 +165,52 @@ namespace OrchestratR.Orchestration
             }
 
             return sagaId;
+        }
+
+        /// <summary>
+        /// Resumes a saga by its ID, continuing from the point it left off.
+        /// </summary>
+        /// <param name="sagaId">The ID of the saga to resume.</param>
+        public async Task ResumeAsync(Guid sagaId)
+        {
+            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId)
+                              ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
+            await ResumeAsync(sagaEntity);
+        }
+
+        /// <summary>
+        /// Resumes the saga by applying a context mutation (e.g., x => x.property = something).
+        /// </summary>
+        /// <param name="sagaId">The ID of the saga to resume.</param>
+        /// <param name="patch">
+        /// A lambda that modifies the existing context object in place. 
+        /// Do not assign a new object to <c>ctx</c>, only change its properties.
+        /// </param>
+        /// <exception cref="KeyNotFoundException">Thrown if saga is not found.</exception>
+        public async Task ResumeAsync(Guid sagaId, Action<TContext> patch)
+        {
+            // Fetch saga
+            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId) 
+                ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
+
+            // Deserialize context
+            var context = DeserializeContext(sagaEntity.ContextData);
+            var originalRef = context;
+            // Apply user-provided mutation to the context
+            patch(context);
+
+            // Defensive check: ensure they didn’t reassign context variable
+            if (!ReferenceEquals(context, originalRef))
+                throw new InvalidOperationException("Patch must not assign a new instance to the context. Modify the existing object.");
+
+            // Serialize the updated context back to JSON
+            sagaEntity.ContextData = SerializeContext(context);
+
+            // Save modified context (we don’t change status/step yet)
+            await _sagaStore.UpdateAsync(sagaEntity);
+
+            // Resume normal orchestrator flow
+            await ResumeAsync(sagaEntity);
         }
 
         /// <summary>
@@ -294,29 +352,35 @@ namespace OrchestratR.Orchestration
         {
             try
             {
-                _cachedTypeInfo ??= (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
-                return JsonSerializer.Serialize(context, _cachedTypeInfo!);
+                if (_config.ContextTypeInfo is JsonTypeInfo<TContext> typeInfo)
+                {
+                    return JsonSerializer.Serialize(context, typeInfo);
+                }
+
+                return JsonSerializer.Serialize(context, _config.SerializerOptions);
             }
             catch (Exception)
             {
-                return JsonSerializer.Serialize(context, _serializerOptions); // fallback serialization
+                return JsonSerializer.Serialize(context, _config.SerializerOptions);
             }
         }
 
-        // Helper: Deserialize context from JSON string
         private TContext DeserializeContext(string jsonData)
         {
             try
             {
-                _cachedTypeInfo ??= (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
-                return JsonSerializer.Deserialize(jsonData, _cachedTypeInfo!) ?? new TContext();
+                if (_config.ContextTypeInfo is JsonTypeInfo<TContext> typeInfo)
+                {
+                    return JsonSerializer.Deserialize(jsonData, typeInfo) ?? new TContext();
+                }
+
+                return JsonSerializer.Deserialize<TContext>(jsonData, _config.SerializerOptions) ?? new TContext();
             }
             catch (Exception)
             {
-                return JsonSerializer.Deserialize<TContext>(jsonData, _serializerOptions) ?? new TContext(); // fallback deserialization
+                return JsonSerializer.Deserialize<TContext>(jsonData, _config.SerializerOptions) ?? new TContext();
             }
         }
-
         #endregion Serialization/Deserialization
     }
 }
