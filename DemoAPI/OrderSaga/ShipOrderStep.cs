@@ -4,7 +4,7 @@ namespace DemoAPI.OrderSaga
 {
     public class ShipOrderStep : ISagaStep<OrderSagaContext>
     {
-        public async Task<SagaStepStatus> ExecuteAsync(OrderSagaContext context)
+        public async Task<SagaStepStatus> ExecuteAsync(OrderSagaContext context, CancellationToken cancellationToken)
         {
             Console.WriteLine($"Shipping order {context.OrderId}...");
             await Task.Delay(50);
@@ -14,7 +14,7 @@ namespace DemoAPI.OrderSaga
             return SagaStepStatus.Continue;
         }
 
-        public async Task CompensateAsync(OrderSagaContext context)
+        public async Task CompensateAsync(OrderSagaContext context, CancellationToken cancellationToken)
         {
             if (context.Shipped)
             {

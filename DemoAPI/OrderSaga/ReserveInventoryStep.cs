@@ -4,7 +4,7 @@ namespace DemoAPI.OrderSaga
 {
     public class ReserveInventoryStep : ISagaStep<OrderSagaContext>
     {
-        public async Task<SagaStepStatus> ExecuteAsync(OrderSagaContext context)
+        public async Task<SagaStepStatus> ExecuteAsync(OrderSagaContext context, CancellationToken cancellationToken)
         {
             Console.WriteLine($"Reserving inventory for order {context.OrderId}...");
             // Simulate inventory reservation (call inventory service)
@@ -15,7 +15,7 @@ namespace DemoAPI.OrderSaga
             return SagaStepStatus.Continue;
         }
 
-        public async Task CompensateAsync(OrderSagaContext context)
+        public async Task CompensateAsync(OrderSagaContext context, CancellationToken cancellationToken)
         {
             if (context.InventoryReserved)
             {

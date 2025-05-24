@@ -20,35 +20,26 @@ namespace DemoAPI.Controllers
         }
 
         [HttpGet("start")]
-        public async Task<Guid> StartSaga()
+        public async Task<Guid> StartSaga(CancellationToken cancellationToken)
         {
 
             var newOrderSagaContext = new OrderSagaContext { OrderId = Guid.NewGuid() };
             Console.WriteLine($"Starting saga for Order {newOrderSagaContext.OrderId}...");
-            Guid sagaId = await _orchestrator.StartAsync(newOrderSagaContext);
+            Guid sagaId = await _orchestrator.StartAsync(newOrderSagaContext, cancellationToken);
 
             return sagaId;
-            return await Task.FromResult(new Guid());
         }
 
         [HttpGet("callback")]
-        public async Task<Guid> Continue(Guid sagaId)
+        public async Task<Guid> Continue(Guid sagaId, CancellationToken cancellation)
         {
             var sagaEntity = await _sagaStore.FindByIdAsync(sagaId);
             if (sagaEntity != null)
             {
-                // Update context: payment succeeded
-                var context = System.Text.Json.JsonSerializer.Deserialize<OrderSagaContext>(sagaEntity.ContextData)!;
-                context.PaymentProcessed = true;
-                sagaEntity.ContextData = System.Text.Json.JsonSerializer.Serialize(context);
-                // Optionally, update sagaEntity in store (not strictly needed until resume)
-                await _sagaStore.UpdateAsync(sagaEntity);
                 // Resume the saga
-                var orchInterface = _orchestrator; // Use the injected orchestrator directly
-                await orchInterface.ResumeAsync(sagaEntity);
+                await _orchestrator.ResumeAsync(sagaId, ctx => ctx.PaymentProcessed = true);
             }
             return sagaId;
-            return await Task.FromResult(new Guid());
         }
 
         [HttpGet("getInfo")]
@@ -56,7 +47,7 @@ namespace DemoAPI.Controllers
         {
             var sagaEntity = await _sagaStore.FindByIdAsync(sagaId);
             Console.WriteLine($"Saga {sagaId} completed with status: {sagaEntity?.Status}");
-            return sagaEntity;
+            return sagaEntity ?? new SagaEntity();
         }
 
     }
