@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using OrchestratR.Core;
 using OrchestratR.Persistence;
+using OrchestratR.Tracing;
 
 namespace OrchestratR.Registration
 {
@@ -41,6 +42,15 @@ namespace OrchestratR.Registration
                 services.AddSingleton<ISagaStore, InMemorySagaStore>();
             }
 
+            if (options.TracingEnabled)
+            {
+                services.AddSingleton<ISagaTelemetry, SagaTelemetry>();
+            }
+            else
+            {
+                services.AddSingleton<ISagaTelemetry, NoSagaTelemetry>();
+            }
+            
             return services;
         }
     }

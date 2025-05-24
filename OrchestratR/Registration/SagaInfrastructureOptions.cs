@@ -9,6 +9,8 @@ namespace OrchestratR.Registration
         internal bool UseEfCoreEnabled { get; private set; }
         internal bool UseInMemoryEnabled { get; private set; }
         internal bool SkipMigrations { get; private set; }
+        internal bool TracingEnabled { get; private set; }
+
         internal Action<DbContextOptionsBuilder>? DbContextOptionsAction { get; private set; }
 
         public static string GetMigrationsAssembly()
@@ -37,7 +39,6 @@ namespace OrchestratR.Registration
         public SagaInfrastructureOptions UseInMemory()
         {
             UseInMemoryEnabled = true;
-
             return this;
         }
 
@@ -45,6 +46,13 @@ namespace OrchestratR.Registration
         public SagaInfrastructureOptions SkipMigrationApplication()
         {
             SkipMigrations = true;
+            return this;
+        }
+
+
+        public SagaInfrastructureOptions UseTracing()
+        {
+            TracingEnabled = true;
             return this;
         }
     }
