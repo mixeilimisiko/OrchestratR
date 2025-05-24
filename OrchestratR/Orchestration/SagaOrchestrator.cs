@@ -22,9 +22,6 @@ namespace OrchestratR.Orchestration
         private readonly ISagaStore _sagaStore;
         private readonly ISagaTelemetry _telemetry;
 
-        //private readonly JsonSerializerOptions _serializerOptions;
-        //private JsonTypeInfo<TContext>? _cachedTypeInfo;
-
         private const int NotStartedStepIndex = -1;
 
         public string SagaTypeName { get; } = typeof(TContext).Name;
@@ -39,21 +36,6 @@ namespace OrchestratR.Orchestration
             _sagaStore = sagaStore;
             _telemetry = telemetry;
 
-            //// Initialize serializer options
-            //_serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-            //{
-            //    TypeInfoResolver = new DefaultJsonTypeInfoResolver()
-            //};
-
-            //// Precompute JsonTypeInfo during orchestrator construction
-            //try
-            //{
-            //    _cachedTypeInfo = (JsonTypeInfo<TContext>?)_serializerOptions.GetTypeInfo(typeof(TContext));
-            //}
-            //catch (Exception)
-            //{
-            //    _cachedTypeInfo = null;
-            //}
         }
         /// <summary>Begins execution of a new saga with the given context.</summary>
         public async Task<Guid> StartAsync(TContext context, CancellationToken cancellationToken = default)
@@ -199,6 +181,9 @@ namespace OrchestratR.Orchestration
         {
             var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken)
                               ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
+
+            ValidateSagaStatusForResume(sagaEntity.Status);
+
             await ResumeAsync(sagaEntity, cancellationToken);
         }
 
@@ -216,6 +201,8 @@ namespace OrchestratR.Orchestration
             // Fetch saga
             var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken) 
                 ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
+
+            ValidateSagaStatusForResume(sagaEntity.Status);
 
             // Deserialize context
             var context = DeserializeContext(sagaEntity.ContextData);
@@ -246,7 +233,7 @@ namespace OrchestratR.Orchestration
             var context = DeserializeContext(sagaEntity.ContextData);
 
             using var activity = _telemetry.StartSaga(sagaEntity.SagaId, sagaEntity.SagaType, "Resume");
-
+            
             if (sagaEntity.Status == SagaStatus.Awaiting)
             {
                 // Saga was waiting for an external trigger, presumably the condition is now met.
@@ -254,19 +241,7 @@ namespace OrchestratR.Orchestration
                 sagaEntity.Status = SagaStatus.InProgress;
                 // Increase current step index
                 sagaEntity.CurrentStepIndex++;
-                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
             }
-            //else if (sagaEntity.Status == SagaStatus.InProgress)
-            //{
-            //    // Saga was in the middle of execution when interrupted (crash scenario).
-            //    // We will resume from the CurrentStepIndex.
-            //    // Possibly re-run the current step if it didn't finish, assuming idempotency.
-            //}
-            //else if (sagaEntity.Status == SagaStatus.Compensating)
-            //{
-            //    // Saga was in the middle of compensation when interrupted.
-            //    // We will continue compensating remaining steps.
-            //}
 
             // Resume forward execution if applicable
             if (sagaEntity.Status == SagaStatus.InProgress)
@@ -372,6 +347,22 @@ namespace OrchestratR.Orchestration
                 await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
             }
         }
+
+        #region Validation
+
+        private static void ValidateSagaStatusForResume(SagaStatus status)
+        {
+            if (status == SagaStatus.Completed
+                || status == SagaStatus.Compensated
+                || status == SagaStatus.Failed
+                || status == SagaStatus.NotStarted)
+            {
+                throw new InvalidOperationException(
+                    $"Saga is not in a resumable state: {status}");
+            }
+        }
+
+        #endregion Validation
 
         #region StepExecution
         // Helper: Execute a step with its associated policy (if any)
