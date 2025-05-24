@@ -28,7 +28,7 @@ namespace OrchestratR.Persistence
         }
 
 
-        public Task UpdateStatusAsync(Guid sagaId, SagaStatus status, CancellationToken cancellationToken)
+        public Task UpdateStatusAsync(Guid sagaId, SagaStatus status, CancellationToken cancellationToken = default)
         {
             if (_sagas.TryGetValue(sagaId, out var saga))
             {

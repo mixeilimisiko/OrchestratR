@@ -6,9 +6,9 @@ namespace OrchestratR.Orchestration
 {
     public class SagaConfig<TContext> where TContext : SagaContext
     {
-        internal List<SagaStepDefinition<TContext>> Steps { get; set; } = [];
-        internal JsonSerializerOptions SerializerOptions { get; set; } = default!;
-        internal JsonTypeInfo<TContext>? ContextTypeInfo { get; set; }
+        public List<SagaStepDefinition<TContext>> Steps { get; set; } = [];
+        public JsonSerializerOptions SerializerOptions { get; set; } = default!;
+        public JsonTypeInfo<TContext>? ContextTypeInfo { get; set; }
 
     }
 }

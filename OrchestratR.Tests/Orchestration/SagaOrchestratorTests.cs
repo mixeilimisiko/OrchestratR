@@ -59,13 +59,13 @@ namespace OrchestratR.Tests.Orchestration
 
         private class TestStep : ISagaStep<TestSagaContext>
         {
-            public Task<SagaStepStatus> ExecuteAsync(TestSagaContext context)
+            public Task<SagaStepStatus> ExecuteAsync(TestSagaContext context, CancellationToken cancellation)
             {
                 // Simulate work
                 return Task.FromResult(SagaStepStatus.Continue);
             }
 
-            public Task CompensateAsync(TestSagaContext context)
+            public Task CompensateAsync(TestSagaContext context, CancellationToken cancellationToken)
             {
                 // No-op
                 return Task.CompletedTask;
