@@ -8,6 +8,6 @@ namespace OrchestratR.Orchestration
     {
         string SagaTypeName { get; }
 
-        Task ResumeAsync(Core.SagaEntity sagaEntity);
+        Task ResumeAsync(Core.SagaEntity sagaEntity, CancellationToken cancellationToken = default);
     }
 }

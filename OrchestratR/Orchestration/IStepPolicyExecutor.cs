@@ -4,6 +4,6 @@ namespace OrchestratR.Orchestration
 {
     public interface IStepPolicyExecutor<TContext>
     {
-        Task<SagaStepStatus> ExecuteAsync(Func<Task<SagaStepStatus>> stepExecution);
+        Task<SagaStepStatus> ExecuteAsync(Func<CancellationToken, Task<SagaStepStatus>> stepExecution, CancellationToken cancellationToken);
     }
 }

@@ -6,14 +6,14 @@ namespace OrchestratR.Core
     /// </summary>
     public interface ISagaStore
     {
-        Task SaveAsync(SagaEntity saga);                              // Save a new saga instance
+        Task SaveAsync(SagaEntity saga, CancellationToken cancellationToken = default);                              // Save a new saga instance
 
-        Task UpdateAsync(SagaEntity saga);                            // Update existing saga state
-        Task UpdateStatusAsync(Guid sagaId, SagaStatus status);       // Update only the status of a saga
-        Task UpdateStepIndexAsync(Guid sagaId, int stepIndex);        // Update the current step index of a saga
-        Task UpdateContextDataAsync(Guid sagaId, string contextData); // Update the context data of a saga
+        Task UpdateAsync(SagaEntity saga, CancellationToken cancellationToken = default);                            // Update existing saga state
+        Task UpdateStatusAsync(Guid sagaId, SagaStatus status, CancellationToken cancellationToken = default);       // Update only the status of a saga
+        Task UpdateStepIndexAsync(Guid sagaId, int stepIndex, CancellationToken cancellationToken = default);        // Update the current step index of a saga
+        Task UpdateContextDataAsync(Guid sagaId, string contextData, CancellationToken cancellationToken = default); // Update the context data of a saga
 
-        Task<SagaEntity?> FindByIdAsync(Guid sagaId);                 // Retrieve saga by its ID
-        Task<List<SagaEntity>> FindByStatusAsync(SagaStatus status);  // Retrieve all sagas with a given status
+        Task<SagaEntity?> FindByIdAsync(Guid sagaId, CancellationToken cancellationToken = default);                 // Retrieve saga by its ID
+        Task<List<SagaEntity>> FindByStatusAsync(SagaStatus status, CancellationToken cancellationToken = default);  // Retrieve all sagas with a given status
     }
 }

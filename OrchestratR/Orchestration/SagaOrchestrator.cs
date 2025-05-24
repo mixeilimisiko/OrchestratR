@@ -19,8 +19,8 @@ namespace OrchestratR.Orchestration
         private readonly IServiceProvider _provider;
         private readonly ISagaStore _sagaStore;
 
-        private readonly JsonSerializerOptions _serializerOptions;
-        private JsonTypeInfo<TContext>? _cachedTypeInfo;
+        //private readonly JsonSerializerOptions _serializerOptions;
+        //private JsonTypeInfo<TContext>? _cachedTypeInfo;
 
         private const int NotStartedStepIndex = -1;
 
@@ -51,7 +51,7 @@ namespace OrchestratR.Orchestration
             //}
         }
         /// <summary>Begins execution of a new saga with the given context.</summary>
-        public async Task<Guid> StartAsync(TContext context)
+        public async Task<Guid> StartAsync(TContext context, CancellationToken cancellationToken = default)
         {
             // 1. Create and persist a new SagaEntity for this saga instance.
             var sagaId = Guid.NewGuid();
@@ -63,11 +63,11 @@ namespace OrchestratR.Orchestration
                 CurrentStepIndex = NotStartedStepIndex,
                 ContextData = SerializeContext(context)
             };
-            await _sagaStore.SaveAsync(sagaEntity);
+            await _sagaStore.SaveAsync(sagaEntity, cancellationToken);
 
             // Immediately mark as InProgress and update (since we are about to execute)
             sagaEntity.Status = SagaStatus.InProgress;
-            await _sagaStore.UpdateAsync(sagaEntity);
+            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
             // 2. Execute steps in order until done, awaiting, or failure.
             try
@@ -79,16 +79,23 @@ namespace OrchestratR.Orchestration
                 // after step execution but before next iteration starts.
                 for (int i = 0; i < _config.Steps.Count; i++)
                 {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        // Stop gracefully, keep state intact
+                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+                        return sagaId;
+                    }
+
                     sagaEntity.CurrentStepIndex = i;
                     // Persist the index change (so recovery knows which step we were on)
-                    await _sagaStore.UpdateAsync(sagaEntity);
+                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
                     // Load context object (it might have been updated in the previous loop iteration)
                     context = DeserializeContext(sagaEntity.ContextData);
 
                     var stepDef = _config.Steps[i];
 
-                    SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context);
+                    SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
 
                     // save the possibly updated context after step execution
                     // we keep ContextData in memory for a small amount of time
@@ -104,7 +111,7 @@ namespace OrchestratR.Orchestration
                     {
                         // Step needs external event. Mark saga as Awaiting and stop execution.
                         sagaEntity.Status = SagaStatus.Awaiting;
-                        await _sagaStore.UpdateAsync(sagaEntity);
+                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                         return sagaId; // Return early, saga will resume later
                     }
 
@@ -115,13 +122,19 @@ namespace OrchestratR.Orchestration
                 sagaEntity.Status = SagaStatus.Completed;
                 sagaEntity.CurrentStepIndex = _config.Steps.Count; // mark index past the last step
                 sagaEntity.ContextData = SerializeContext(context);
-                await _sagaStore.UpdateAsync(sagaEntity);
+                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation was triggered (e.g., HTTP request aborted or host shutting down)
+                // Gracefully stop without compensation — leave saga InProgress
+                return sagaId;
             }
             catch (Exception ex)
             {
                 // A step threw an error – begin compensation
                 sagaEntity.Status = SagaStatus.Compensating;
-                await _sagaStore.UpdateAsync(sagaEntity);
+                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
                 // Determine up to which step had executed (CurrentStepIndex points to the failing step index)
                 int failedStepIndex = sagaEntity.CurrentStepIndex;
@@ -140,10 +153,11 @@ namespace OrchestratR.Orchestration
                         var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
                         // TODO: Think if we need to pass the exception to the compensation step
                         // TODO: Think if we need to apply any policies during compensation
-                        await step.CompensateAsync(context);
+                        await step.CompensateAsync(context, cancellationToken);
                         // Optionally update context if compensation changes it, then save
                         sagaEntity.ContextData = SerializeContext(context);
-                        await _sagaStore.UpdateAsync(sagaEntity);
+                        sagaEntity.CurrentStepIndex = j; // Update to the last compensated step index
+                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                     }
                     catch (Exception compEx)
                     {
@@ -158,7 +172,7 @@ namespace OrchestratR.Orchestration
                 // If any compensation failed (we caught exceptions), one could mark as Failed instead.
                 // For simplicity, we'll mark as Compensated since we attempted best effort rollback.
                 sagaEntity.CurrentStepIndex = 0;
-                await _sagaStore.UpdateAsync(sagaEntity);
+                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
                 // Rethrow or swallow exception depending on desired behavior.
                 // Here, we swallow after compensation, as the saga is considered handled (Compensated).
@@ -171,11 +185,11 @@ namespace OrchestratR.Orchestration
         /// Resumes a saga by its ID, continuing from the point it left off.
         /// </summary>
         /// <param name="sagaId">The ID of the saga to resume.</param>
-        public async Task ResumeAsync(Guid sagaId)
+        public async Task ResumeAsync(Guid sagaId, CancellationToken cancellationToken = default)
         {
-            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId)
+            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken)
                               ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
-            await ResumeAsync(sagaEntity);
+            await ResumeAsync(sagaEntity, cancellationToken);
         }
 
         /// <summary>
@@ -187,10 +201,10 @@ namespace OrchestratR.Orchestration
         /// Do not assign a new object to <c>ctx</c>, only change its properties.
         /// </param>
         /// <exception cref="KeyNotFoundException">Thrown if saga is not found.</exception>
-        public async Task ResumeAsync(Guid sagaId, Action<TContext> patch)
+        public async Task ResumeAsync(Guid sagaId, Action<TContext> patch, CancellationToken cancellationToken = default)
         {
             // Fetch saga
-            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId) 
+            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken) 
                 ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
 
             // Deserialize context
@@ -207,16 +221,16 @@ namespace OrchestratR.Orchestration
             sagaEntity.ContextData = SerializeContext(context);
 
             // Save modified context (we don’t change status/step yet)
-            await _sagaStore.UpdateAsync(sagaEntity);
+            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
             // Resume normal orchestrator flow
-            await ResumeAsync(sagaEntity);
+            await ResumeAsync(sagaEntity, cancellationToken);
         }
 
         /// <summary>
         /// Resumes an incomplete saga (e.g., Awaiting or interrupted) from a stored SagaEntity.
         /// </summary>
-        public async Task ResumeAsync(SagaEntity sagaEntity)
+        public async Task ResumeAsync(SagaEntity sagaEntity, CancellationToken cancellationToken = default)
         {
             // Reconstruct context from stored data
             var context = DeserializeContext(sagaEntity.ContextData);
@@ -228,7 +242,7 @@ namespace OrchestratR.Orchestration
                 sagaEntity.Status = SagaStatus.InProgress;
                 // Increase current step index
                 sagaEntity.CurrentStepIndex++;
-                await _sagaStore.UpdateAsync(sagaEntity);
+                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
             }
             //else if (sagaEntity.Status == SagaStatus.InProgress)
             //{
@@ -250,21 +264,28 @@ namespace OrchestratR.Orchestration
                     // Start from the current step index
                     for (int i = sagaEntity.CurrentStepIndex; i < _config.Steps.Count; i++)
                     {
+
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            // Stop gracefully, keep state intact
+                            return;
+                        }
+
                         sagaEntity.CurrentStepIndex = i;
-                        await _sagaStore.UpdateAsync(sagaEntity);
+                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
                         // Ensure we have latest context (could have been modified externally or earlier)
                         context = DeserializeContext(sagaEntity.ContextData);
                         var stepDef = _config.Steps[i];
                         //var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
 
-                        SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context);
+                        SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
                         sagaEntity.ContextData = SerializeContext(context);
 
                         if (result == SagaStepStatus.Awaiting)
                         {
                             sagaEntity.Status = SagaStatus.Awaiting;
-                            await _sagaStore.UpdateAsync(sagaEntity);
+                            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                             return; // pause again, awaiting another external event
                         }
                         // else continue loop
@@ -274,13 +295,18 @@ namespace OrchestratR.Orchestration
                     sagaEntity.Status = SagaStatus.Completed;
                     sagaEntity.CurrentStepIndex = _config.Steps.Count;
                     sagaEntity.ContextData = SerializeContext(context);
-                    await _sagaStore.UpdateAsync(sagaEntity);
+                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    //leave saga InProgress
+                    return;
                 }
                 catch (Exception ex)
                 {
                     // If an exception occurs on resume, handle similar to Start logic
                     sagaEntity.Status = SagaStatus.Compensating;
-                    await _sagaStore.UpdateAsync(sagaEntity);
+                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                     int failedStepIndex = sagaEntity.CurrentStepIndex;
                     int lastExecutedIndex = failedStepIndex - 1;
                     for (int j = lastExecutedIndex; j >= 0; j--)
@@ -290,9 +316,10 @@ namespace OrchestratR.Orchestration
                             context = DeserializeContext(sagaEntity.ContextData);
                             var stepDef = _config.Steps[j];
                             var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
-                            await step.CompensateAsync(context);
+                            await step.CompensateAsync(context, cancellationToken);
+                            sagaEntity.CurrentStepIndex = j;
                             sagaEntity.ContextData = SerializeContext(context);
-                            await _sagaStore.UpdateAsync(sagaEntity);
+                            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                         }
                         catch (Exception compEx)
                         {
@@ -300,7 +327,7 @@ namespace OrchestratR.Orchestration
                         }
                     }
                     sagaEntity.Status = SagaStatus.Compensated;
-                    await _sagaStore.UpdateAsync(sagaEntity);
+                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                 }
             }
 
@@ -318,9 +345,9 @@ namespace OrchestratR.Orchestration
                         context = DeserializeContext(sagaEntity.ContextData);
                         var stepDef = _config.Steps[j];
                         var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
-                        await step.CompensateAsync(context);
+                        await step.CompensateAsync(context, cancellationToken);
                         sagaEntity.ContextData = SerializeContext(context);
-                        await _sagaStore.UpdateAsync(sagaEntity);
+                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                     }
                     catch (Exception compEx)
                     {
@@ -329,19 +356,19 @@ namespace OrchestratR.Orchestration
                 }
                 sagaEntity.Status = SagaStatus.Compensated;
                 sagaEntity.CurrentStepIndex = 0;
-                await _sagaStore.UpdateAsync(sagaEntity);
+                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
             }
         }
 
         #region StepExecution
         // Helper: Execute a step with its associated policy (if any)
-        private Task<SagaStepStatus> ExecuteStepWithPolicyAsync(SagaStepDefinition<TContext> stepDef, TContext context)
+        private Task<SagaStepStatus> ExecuteStepWithPolicyAsync(SagaStepDefinition<TContext> stepDef, TContext context, CancellationToken cancellationToken)
         {
             var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
 
             return stepDef.PolicyExecutor is not null
-                ? stepDef.PolicyExecutor.ExecuteAsync(() => step.ExecuteAsync(context))
-                : step.ExecuteAsync(context);
+              ? stepDef.PolicyExecutor.ExecuteAsync(ct => step.ExecuteAsync(context, ct), cancellationToken)
+              : step.ExecuteAsync(context, cancellationToken);
         }
         #endregion StepExecution
 

@@ -11,7 +11,7 @@ namespace OrchestratR.Persistence
     {
         private readonly ConcurrentDictionary<Guid, SagaEntity> _sagas = new();
 
-        public Task SaveAsync(SagaEntity saga)
+        public Task SaveAsync(SagaEntity saga, CancellationToken cancellationToken = default)
         {
             if (!_sagas.TryAdd(saga.SagaId, saga))
             {
@@ -20,7 +20,7 @@ namespace OrchestratR.Persistence
             return Task.CompletedTask;
         }
 
-        public Task UpdateAsync(SagaEntity saga)
+        public Task UpdateAsync(SagaEntity saga, CancellationToken cancellationToken = default)
         {
             // Overwrite the existing saga entry (assuming it exists)
             _sagas[saga.SagaId] = saga;
@@ -28,7 +28,7 @@ namespace OrchestratR.Persistence
         }
 
 
-        public Task UpdateStatusAsync(Guid sagaId, SagaStatus status)
+        public Task UpdateStatusAsync(Guid sagaId, SagaStatus status, CancellationToken cancellationToken = default)
         {
             if (_sagas.TryGetValue(sagaId, out var saga))
             {
@@ -41,7 +41,7 @@ namespace OrchestratR.Persistence
             return Task.CompletedTask;
         }
 
-        public Task UpdateStepIndexAsync(Guid sagaId, int stepIndex)
+        public Task UpdateStepIndexAsync(Guid sagaId, int stepIndex, CancellationToken cancellationToken = default)
         {
             if (_sagas.TryGetValue(sagaId, out var saga))
             {
@@ -54,7 +54,7 @@ namespace OrchestratR.Persistence
             return Task.CompletedTask;
         }
 
-        public Task UpdateContextDataAsync(Guid sagaId, string contextData)
+        public Task UpdateContextDataAsync(Guid sagaId, string contextData, CancellationToken cancellationToken = default)
         {
             if (_sagas.TryGetValue(sagaId, out var saga))
             {
@@ -67,13 +67,13 @@ namespace OrchestratR.Persistence
             return Task.CompletedTask;
         }
 
-        public Task<SagaEntity?> FindByIdAsync(Guid sagaId)
+        public Task<SagaEntity?> FindByIdAsync(Guid sagaId, CancellationToken cancellationToken = default)
         {
             _sagas.TryGetValue(sagaId, out SagaEntity? saga);
             return Task.FromResult<SagaEntity?>(saga);
         }
 
-        public Task<List<SagaEntity>> FindByStatusAsync(SagaStatus status)
+        public Task<List<SagaEntity>> FindByStatusAsync(SagaStatus status, CancellationToken cancellationToken = default)
         {
             var result = _sagas.Values.Where(s => s.Status == status).ToList();
             return Task.FromResult(result);
