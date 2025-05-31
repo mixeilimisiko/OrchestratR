@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrchestratR.Core;
 using OrchestratR.Tracing;
@@ -6,7 +7,6 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
-// TODO: Refactor for better readability and maintainability
 namespace OrchestratR.Orchestration
 {
     /// <summary>
@@ -21,6 +21,7 @@ namespace OrchestratR.Orchestration
         private readonly IServiceProvider _provider;
         private readonly ISagaStore _sagaStore;
         private readonly ISagaTelemetry _telemetry;
+        private readonly ILogger<SagaOrchestrator<TContext>> _logger;
 
         private const int NotStartedStepIndex = -1;
 
@@ -29,13 +30,14 @@ namespace OrchestratR.Orchestration
         public SagaOrchestrator(IOptions<SagaConfig<TContext>> configOptions,
                                 IServiceProvider provider,
                                 ISagaStore sagaStore,
-                                ISagaTelemetry telemetry)
+                                ISagaTelemetry telemetry,
+                                ILogger<SagaOrchestrator<TContext>> logger)
         {
             _config = configOptions.Value;
             _provider = provider;
             _sagaStore = sagaStore;
             _telemetry = telemetry;
-
+            _logger = logger;
         }
         /// <summary>Begins execution of a new saga with the given context.</summary>
         public async Task<Guid> StartAsync(TContext context, CancellationToken cancellationToken = default)
@@ -59,118 +61,8 @@ namespace OrchestratR.Orchestration
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
             // 2. Execute steps in order until done, awaiting, or failure.
-            try
-            {
-                // since exception or transient failure or anything like that
-                // is more likely to happen before and during the ExecuteStepWithPolicyAsync
-                // we first presist current step index which indicates what step we have not executed yet,
-                // though we still have risk of executing same step twice if orchestrator breaks 
-                // after step execution but before next iteration starts.
-                for (int i = 0; i < _config.Steps.Count; i++)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        // Stop gracefully, keep state intact
-                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                        return sagaId;
-                    }
+            return await ExecuteSagaFlowAsync(sagaEntity, activity, cancellationToken);
 
-                    sagaEntity.CurrentStepIndex = i;
-                    // Persist the index change (so recovery knows which step we were on)
-                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-
-                    // Load context object (it might have been updated in the previous loop iteration)
-                    context = DeserializeContext(sagaEntity.ContextData);
-
-                    var stepDef = _config.Steps[i];
-
-                    SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
-
-                    // save the possibly updated context after step execution
-                    // we keep ContextData in memory for a small amount of time
-                    // it will be persisted either with incremented CurrentStepIndex on next iteration
-                    // or with status in case of asynchronous step.
-
-                    // Saving it separately won't avoid the risk of the situation where
-                    // step execution is successful but persisting the context fails, it will just
-                    // reduce the risk a very little amount which makes it not worth it to do.
-                    sagaEntity.ContextData = SerializeContext(context);
-
-                    if (result == SagaStepStatus.Awaiting)
-                    {
-                        // Step needs external event. Mark saga as Awaiting and stop execution.
-                        sagaEntity.Status = SagaStatus.Awaiting;
-                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                        return sagaId; // Return early, saga will resume later
-                    }
-
-                    // result was Continue, so loop will move to next step
-                }
-
-                // All steps completed successfully
-                sagaEntity.Status = SagaStatus.Completed;
-                sagaEntity.CurrentStepIndex = _config.Steps.Count; // mark index past the last step
-                sagaEntity.ContextData = SerializeContext(context);
-                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-
-                _telemetry.MarkCompleted(activity);
-            }
-            catch (OperationCanceledException)
-            {
-                // Cancellation was triggered (e.g., HTTP request aborted or host shutting down)
-                // Gracefully stop without compensation — leave saga InProgress
-                return sagaId;
-            }
-            catch (Exception ex)
-            {
-                _telemetry.RecordException(activity, ex);
-                // A step threw an error – begin compensation
-                sagaEntity.Status = SagaStatus.Compensating;
-                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-
-                // Determine up to which step had executed (CurrentStepIndex points to the failing step index)
-                int failedStepIndex = sagaEntity.CurrentStepIndex;
-                // If exception was thrown, the step at failedStepIndex did not complete successfully.
-                // We need to compensate all steps before it (i.e., indices 0 to failedStepIndex-1).
-                int lastExecutedIndex = failedStepIndex - 1;
-
-                // Compensate in reverse order for all executed steps
-                for (int j = lastExecutedIndex; j >= 0; j--)
-                {
-                    try
-                    {
-                        // Load latest context (it might have been modified by partial execution or prior compensation)
-                        context = DeserializeContext(sagaEntity.ContextData);
-                        var stepDef = _config.Steps[j];
-                        var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
-                        // TODO: Think if we need to pass the exception to the compensation step
-                        // TODO: Think if we need to apply any policies during compensation
-                        await step.CompensateAsync(context, cancellationToken);
-                        // Optionally update context if compensation changes it, then save
-                        sagaEntity.ContextData = SerializeContext(context);
-                        sagaEntity.CurrentStepIndex = j; // Update to the last compensated step index
-                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                    }
-                    catch (Exception compEx)
-                    {
-                        // Compensation for a step failed. Log the error and continue attempting to compensate earlier steps.
-                        // (In a real system, you might want to record this in sagaEntity as well.)
-                        Console.Error.WriteLine($"Compensation step {j} failed: {compEx}");
-                    }
-                }
-
-                // After attempting compensation of all executed steps:
-                sagaEntity.Status = SagaStatus.Compensated;
-                // If any compensation failed (we caught exceptions), one could mark as Failed instead.
-                // For simplicity, we'll mark as Compensated since we attempted best effort rollback.
-                sagaEntity.CurrentStepIndex = 0;
-                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-
-                // Rethrow or swallow exception depending on desired behavior.
-                // Here, we swallow after compensation, as the saga is considered handled (Compensated).
-            }
-
-            return sagaId;
         }
 
         /// <summary>
@@ -233,120 +125,223 @@ namespace OrchestratR.Orchestration
             var context = DeserializeContext(sagaEntity.ContextData);
 
             using var activity = _telemetry.StartSaga(sagaEntity.SagaId, sagaEntity.SagaType, "Resume");
-            
-            if (sagaEntity.Status == SagaStatus.Awaiting)
+
+            var resumeHandler = GetResumeHandler(sagaEntity.Status);
+
+            await resumeHandler(sagaEntity, activity, cancellationToken);
+        }
+
+
+        #region Core Execution Logic
+
+        /// <summary>
+        /// Central execution flow that handles both start and resume scenarios.
+        /// Executes forward steps, handles completion, and manages exceptions with compensation.
+        /// </summary>
+        private async Task<Guid> ExecuteSagaFlowAsync(SagaEntity sagaEntity, Activity? activity, CancellationToken cancellationToken)
+        {
+            try
             {
-                // Saga was waiting for an external trigger, presumably the condition is now met.
-                // Continue from the current step (which had returned Awaiting).
-                sagaEntity.Status = SagaStatus.InProgress;
-                // Increase current step index
-                sagaEntity.CurrentStepIndex++;
+                await ExecuteForwardStepsAsync(sagaEntity, cancellationToken);
+                await HandleSagaCompletionAsync(sagaEntity, cancellationToken);
+                _telemetry.MarkCompleted(activity);
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation was triggered (e.g., HTTP request aborted or host shutting down)
+                // Gracefully stop without compensation — leave saga InProgress
+                return sagaEntity.SagaId;
+            }
+            catch (Exception ex)
+            {
+                _telemetry.RecordException(activity, ex);
+                await HandleSagaFailureAsync(sagaEntity, ex, cancellationToken);
             }
 
-            // Resume forward execution if applicable
-            if (sagaEntity.Status == SagaStatus.InProgress)
+            return sagaEntity.SagaId; 
+        }
+
+        /// <summary>
+        /// Executes steps sequentially from the current step index until completion or awaiting state.
+        /// </summary>
+        private async Task ExecuteForwardStepsAsync(SagaEntity sagaEntity, CancellationToken cancellationToken)
+        {
+            // since exception or transient failure or anything like that
+            // is more likely to happen before and during the ExecuteStepWithPolicyAsync
+            // we first presist current step index which indicates what step we have not executed yet,
+            // though we still have risk of executing same step twice if orchestrator breaks 
+            // after step execution but before next iteration starts.
+            for (int i = sagaEntity.CurrentStepIndex; i < _config.Steps.Count; i++)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    // Stop gracefully, keep state intact
+                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+                    return;
+                }
+
+                sagaEntity.CurrentStepIndex = i;
+                // Persist the index change (so recovery knows which step we were on)
+                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+                // Load context object (it might have been updated in the previous loop iteration)
+                var context = DeserializeContext(sagaEntity.ContextData);
+                var stepDef = _config.Steps[i];
+
+                SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
+
+                // save the possibly updated context after step execution
+                // we keep ContextData in memory for a small amount of time
+                // it will be persisted either with incremented CurrentStepIndex on next iteration
+                // or with status in case of asynchronous step.
+
+                // Saving it separately won't avoid the risk of the situation where
+                // step execution is successful but persisting the context fails, it will just
+                // reduce the risk a very little amount which makes it not worth it to do.
+                sagaEntity.ContextData = SerializeContext(context);
+
+                if (result == SagaStepStatus.Awaiting)
+                {
+                    // Step needs external event. Mark saga as Awaiting and stop execution.
+                    sagaEntity.Status = SagaStatus.Awaiting;
+                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+                    return; // Return early, saga will resume later
+                }
+
+                // result was Continue, so loop will move to next step
+            }
+        }
+
+        /// <summary>
+        /// Marks saga as completed when all steps have been executed successfully.
+        /// </summary>
+        private async Task HandleSagaCompletionAsync(SagaEntity sagaEntity, CancellationToken cancellationToken)
+        {
+            // All steps completed successfully
+            sagaEntity.Status = SagaStatus.Completed;
+            sagaEntity.CurrentStepIndex = _config.Steps.Count; // mark index past the last step
+            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+        }
+
+
+        /// <summary>
+        /// Handles saga failure by initiating compensation for all executed steps.
+        /// </summary>
+        private async Task HandleSagaFailureAsync(SagaEntity sagaEntity, Exception ex, CancellationToken cancellationToken)
+        {
+            // A step threw an error – begin compensation
+            sagaEntity.Status = SagaStatus.Compensating;
+            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+            await ExecuteCompensationAsync(sagaEntity, cancellationToken);
+
+            // After attempting compensation of all executed steps:
+            sagaEntity.Status = SagaStatus.Compensated;
+            // If any compensation failed (we caught exceptions), one could mark as Failed instead.
+            // For simplicity, we'll mark as Compensated since we attempted best effort rollback.
+            sagaEntity.CurrentStepIndex = 0;
+            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+            // Rethrow or swallow exception depending on desired behavior.
+            // Here, we swallow after compensation, as the saga is considered handled (Compensated).
+        }
+
+        /// <summary>
+        /// Executes compensation steps in reverse order for all previously executed steps.
+        /// </summary>
+        private async Task ExecuteCompensationAsync(SagaEntity sagaEntity, CancellationToken cancellationToken)
+        {
+            // Determine up to which step had executed (CurrentStepIndex points to the failing step index)
+            int failedStepIndex = sagaEntity.CurrentStepIndex;
+            // If exception was thrown, the step at failedStepIndex did not complete successfully.
+            // We need to compensate all steps before it (i.e., indices 0 to failedStepIndex-1).
+            int lastExecutedIndex = failedStepIndex - 1;
+
+            // Compensate in reverse order for all executed steps
+            for (int j = lastExecutedIndex; j >= 0; j--)
             {
                 try
                 {
-                    // Start from the current step index
-                    for (int i = sagaEntity.CurrentStepIndex; i < _config.Steps.Count; i++)
-                    {
-                        if (cancellationToken.IsCancellationRequested)
-                        {
-                            // Stop gracefully, keep state intact
-                            return;
-                        }
-
-                        sagaEntity.CurrentStepIndex = i;
-                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-
-                        // Ensure we have latest context (could have been modified externally or earlier)
-                        context = DeserializeContext(sagaEntity.ContextData);
-                        var stepDef = _config.Steps[i];
-                        //var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
-
-                        SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
-                        sagaEntity.ContextData = SerializeContext(context);
-
-                        if (result == SagaStepStatus.Awaiting)
-                        {
-                            sagaEntity.Status = SagaStatus.Awaiting;
-                            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                            return; // pause again, awaiting another external event
-                        }
-                        // else continue loop
-                    }
-
-                    // If we exit loop normally, saga now completed
-                    sagaEntity.Status = SagaStatus.Completed;
-                    sagaEntity.CurrentStepIndex = _config.Steps.Count;
+                    // Load latest context (it might have been modified by partial execution or prior compensation)
+                    var context = DeserializeContext(sagaEntity.ContextData);
+                    var stepDef = _config.Steps[j];
+                    var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+                    // TODO: Think if we need to pass the exception to the compensation step
+                    // TODO: Think if we need to apply any policies during compensation
+                    await step.CompensateAsync(context, cancellationToken);
+                    // Optionally update context if compensation changes it, then save
                     sagaEntity.ContextData = SerializeContext(context);
-                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-
-                    _telemetry.MarkCompleted(activity);
-                }
-                catch (OperationCanceledException)
-                {
-                    //leave saga InProgress
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _telemetry.RecordException(activity, ex);
-                    sagaEntity.Status = SagaStatus.Compensating;
-                    await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                    int failedStepIndex = sagaEntity.CurrentStepIndex;
-                    int lastExecutedIndex = failedStepIndex - 1;
-                    for (int j = lastExecutedIndex; j >= 0; j--)
-                    {
-                        try
-                        {
-                            context = DeserializeContext(sagaEntity.ContextData);
-                            var stepDef = _config.Steps[j];
-                            var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
-                            await step.CompensateAsync(context, cancellationToken);
-                            sagaEntity.CurrentStepIndex = j;
-                            sagaEntity.ContextData = SerializeContext(context);
-                            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                        }
-                        catch (Exception compEx)
-                        {
-                            Console.Error.WriteLine($"Compensation step {j} failed during resume: {compEx}");
-                        }
-                    }
-                    sagaEntity.Status = SagaStatus.Compensated;
+                    sagaEntity.CurrentStepIndex = j; // Update to the last compensated step index
                     await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
                 }
-            }
-
-            // Resume compensation if saga was mid-compensation
-            if (sagaEntity.Status == SagaStatus.Compensating)
-            {
-                // Find which step was last compensated (if any).
-                // For simplicity, assume compensation starts from last executed step if not already done.
-                int lastIndexToCompensate = sagaEntity.CurrentStepIndex - 1;
-                if (lastIndexToCompensate < 0) return; //lastIndexToCompensate = _config.Steps.Count - 1;
-                for (int j = lastIndexToCompensate; j >= 0; j--)
+                catch (Exception compEx)
                 {
-                    try
-                    {
-                        context = DeserializeContext(sagaEntity.ContextData);
-                        var stepDef = _config.Steps[j];
-                        var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
-                        await step.CompensateAsync(context, cancellationToken);
-                        sagaEntity.ContextData = SerializeContext(context);
-                        await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-                    }
-                    catch (Exception compEx)
-                    {
-                        Console.Error.WriteLine($"Compensation step {j} failed (resume): {compEx}");
-                    }
+                    // Compensation for a step failed. Log the error and continue attempting to compensate earlier steps.
+                    // (In a real system, you might want to record this in sagaEntity as well.)
+                    Console.Error.WriteLine($"Compensation step {j} failed: {compEx}");
                 }
-                sagaEntity.Status = SagaStatus.Compensated;
-                sagaEntity.CurrentStepIndex = 0;
-                await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
             }
         }
+
+        #endregion Core Execution Logic
+
+        #region Resume Handlers
+
+        /// <summary>
+        /// Factory method to get the appropriate resume handler based on saga status.
+        /// This uses the Strategy pattern to eliminate if-else chains.
+        /// </summary>
+        private Func<SagaEntity, Activity?, CancellationToken, Task> GetResumeHandler(SagaStatus status)
+        {
+            return status switch
+            {
+                SagaStatus.Awaiting => HandleAwaitingResumeAsync,
+                SagaStatus.InProgress => HandleInProgressResumeAsync,
+                SagaStatus.Compensating => HandleCompensatingResumeAsync,
+                _ => throw new InvalidOperationException($"Cannot resume saga with status: {status}")
+            };
+        }
+
+        /// <summary>
+        /// Handles resuming a saga that was in Awaiting status.
+        /// </summary>
+        private async Task HandleAwaitingResumeAsync(SagaEntity sagaEntity, Activity? activity, CancellationToken cancellationToken)
+        {
+            // Saga was waiting for an external trigger, presumably the condition is now met.
+            // Continue from the current step (which had returned Awaiting).
+            sagaEntity.Status = SagaStatus.InProgress;
+            // Increase current step index
+            sagaEntity.CurrentStepIndex++;
+
+            await HandleInProgressResumeAsync(sagaEntity, activity, cancellationToken);
+        }
+
+        /// <summary>
+        /// Handles resuming a saga that was in InProgress status.
+        /// </summary>
+        private async Task HandleInProgressResumeAsync(SagaEntity sagaEntity, Activity? activity, CancellationToken cancellationToken)
+        {
+            await ExecuteSagaFlowAsync(sagaEntity, activity, cancellationToken);
+        }
+
+        /// <summary>
+        /// Handles resuming a saga that was in Compensating status.
+        /// </summary>
+        private async Task HandleCompensatingResumeAsync(SagaEntity sagaEntity, Activity? activity, CancellationToken cancellationToken)
+        {
+            await ExecuteCompensationAsync(sagaEntity, cancellationToken);
+
+            // After attempting compensation of all executed steps:
+            sagaEntity.Status = SagaStatus.Compensated;
+            // If any compensation failed (we caught exceptions), one could mark as Failed instead.
+            // For simplicity, we'll mark as Compensated since we attempted best effort rollback.
+            sagaEntity.CurrentStepIndex = 0;
+            await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+        }
+
+
+        #endregion Resume Handlers
 
         #region Validation
 
@@ -358,7 +353,7 @@ namespace OrchestratR.Orchestration
                 || status == SagaStatus.NotStarted)
             {
                 throw new InvalidOperationException(
-                    $"Saga is not in a resumable state: {status}");
+                   $"Cannot resume saga with status: {status}");
             }
         }
 
