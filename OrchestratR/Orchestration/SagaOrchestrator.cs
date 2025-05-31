@@ -1,5 +1,4 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using OrchestratR.Core;
 using OrchestratR.Tracing;
@@ -17,11 +16,9 @@ namespace OrchestratR.Orchestration
         where TContext : SagaContext, new()
     {
         private readonly SagaConfig<TContext> _config;
-
         private readonly IServiceProvider _provider;
         private readonly ISagaStore _sagaStore;
         private readonly ISagaTelemetry _telemetry;
-        private readonly ILogger<SagaOrchestrator<TContext>> _logger;
 
         private const int NotStartedStepIndex = -1;
 
@@ -30,15 +27,14 @@ namespace OrchestratR.Orchestration
         public SagaOrchestrator(IOptions<SagaConfig<TContext>> configOptions,
                                 IServiceProvider provider,
                                 ISagaStore sagaStore,
-                                ISagaTelemetry telemetry,
-                                ILogger<SagaOrchestrator<TContext>> logger)
+                                ISagaTelemetry telemetry)
         {
             _config = configOptions.Value;
             _provider = provider;
             _sagaStore = sagaStore;
             _telemetry = telemetry;
-            _logger = logger;
         }
+
         /// <summary>Begins execution of a new saga with the given context.</summary>
         public async Task<Guid> StartAsync(TContext context, CancellationToken cancellationToken = default)
         {
@@ -54,15 +50,22 @@ namespace OrchestratR.Orchestration
             };
             await _sagaStore.SaveAsync(sagaEntity, cancellationToken);
 
+            // Log saga creation
+            _telemetry.LogSagaEvent(SagaEventType.Started, sagaId, SagaTypeName, SagaStatus.NotStarted,
+                SagaLogLevel.Information, "Saga created and ready to start");
+
             using var activity = _telemetry.StartSaga(sagaId, SagaTypeName, "Start");
 
             // Immediately mark as InProgress and update (since we are about to execute)
             sagaEntity.Status = SagaStatus.InProgress;
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
+            // Log status change to InProgress
+            _telemetry.LogSagaEvent(SagaEventType.StatusChanged, sagaId, SagaTypeName, SagaStatus.InProgress,
+                SagaLogLevel.Information, "Saga status changed to InProgress");
+
             // 2. Execute steps in order until done, awaiting, or failure.
             return await ExecuteSagaFlowAsync(sagaEntity, activity, cancellationToken);
-
         }
 
         /// <summary>
@@ -75,6 +78,10 @@ namespace OrchestratR.Orchestration
                               ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
 
             ValidateSagaStatusForResume(sagaEntity.Status);
+
+            // Log saga resume
+            _telemetry.LogSagaEvent(SagaEventType.Resumed, sagaId, sagaEntity.SagaType, sagaEntity.Status,
+                SagaLogLevel.Information, "Saga resume requested");
 
             await ResumeAsync(sagaEntity, cancellationToken);
         }
@@ -91,10 +98,14 @@ namespace OrchestratR.Orchestration
         public async Task ResumeAsync(Guid sagaId, Action<TContext> patch, CancellationToken cancellationToken = default)
         {
             // Fetch saga
-            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken) 
+            var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken)
                 ?? throw new KeyNotFoundException($"Saga with ID {sagaId} not found.");
 
             ValidateSagaStatusForResume(sagaEntity.Status);
+
+            // Log context update
+            _telemetry.LogSagaEvent(SagaEventType.ContextUpdated, sagaId, sagaEntity.SagaType, sagaEntity.Status,
+                SagaLogLevel.Information, "Saga context will be updated before resume");
 
             // Deserialize context
             var context = DeserializeContext(sagaEntity.ContextData);
@@ -102,15 +113,19 @@ namespace OrchestratR.Orchestration
             // Apply user-provided mutation to the context
             patch(context);
 
-            // Defensive check: ensure they didn’t reassign context variable
+            // Defensive check: ensure they didn't reassign context variable
             if (!ReferenceEquals(context, originalRef))
                 throw new InvalidOperationException("Patch must not assign a new instance to the context. Modify the existing object.");
 
             // Serialize the updated context back to JSON
             sagaEntity.ContextData = SerializeContext(context);
 
-            // Save modified context (we don’t change status/step yet)
+            // Save modified context (we don't change status/step yet)
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+            // Log context updated
+            _telemetry.LogSagaEvent(SagaEventType.ContextUpdated, sagaId, sagaEntity.SagaType, sagaEntity.Status,
+                SagaLogLevel.Information, "Saga context updated successfully");
 
             // Resume normal orchestrator flow
             await ResumeAsync(sagaEntity, cancellationToken);
@@ -131,7 +146,6 @@ namespace OrchestratR.Orchestration
             await resumeHandler(sagaEntity, activity, cancellationToken);
         }
 
-
         #region Core Execution Logic
 
         /// <summary>
@@ -146,19 +160,24 @@ namespace OrchestratR.Orchestration
                 await HandleSagaCompletionAsync(sagaEntity, cancellationToken);
                 _telemetry.MarkCompleted(activity);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
                 // Cancellation was triggered (e.g., HTTP request aborted or host shutting down)
                 // Gracefully stop without compensation — leave saga InProgress
+                _telemetry.LogSagaEvent(SagaEventType.Cancelled, sagaEntity.SagaId, sagaEntity.SagaType, sagaEntity.Status,
+                    SagaLogLevel.Warning, "Saga execution was cancelled gracefully");
+                _telemetry.RecordException(activity, ex);
                 return sagaEntity.SagaId;
             }
             catch (Exception ex)
             {
                 _telemetry.RecordException(activity, ex);
+                _telemetry.LogSagaEvent(SagaEventType.Failed, sagaEntity.SagaId, sagaEntity.SagaType, sagaEntity.Status, ex,
+                    SagaLogLevel.Error);
                 await HandleSagaFailureAsync(sagaEntity, ex, cancellationToken);
             }
 
-            return sagaEntity.SagaId; 
+            return sagaEntity.SagaId;
         }
 
         /// <summary>
@@ -188,7 +207,34 @@ namespace OrchestratR.Orchestration
                 var context = DeserializeContext(sagaEntity.ContextData);
                 var stepDef = _config.Steps[i];
 
-                SagaStepStatus result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
+                // Start step telemetry
+                using var stepActivity = _telemetry.StartStep(sagaEntity.SagaId, stepDef.StepType.Name, i);
+
+                _telemetry.LogStepEvent(StepEventType.Started, sagaEntity.SagaId, sagaEntity.SagaType,
+                    stepDef.StepType.Name, i, SagaStepStatus.Continue, SagaLogLevel.Information,
+                    $"Starting execution of step: {stepDef.StepType}");
+
+                SagaStepStatus result;
+                try
+                {
+                    result = await ExecuteStepWithPolicyAsync(stepDef, context, cancellationToken);
+
+                    // Log successful step completion
+                    _telemetry.LogStepEvent(StepEventType.Completed, sagaEntity.SagaId, sagaEntity.SagaType,
+                        stepDef.StepType.Name, i, result, SagaLogLevel.Information,
+                        $"Step completed with status: {result}");
+
+                    _telemetry.MarkCompleted(stepActivity);
+                }
+                catch (Exception stepEx)
+                {
+                    // Log step failure
+                    _telemetry.LogStepEvent(StepEventType.Failed, sagaEntity.SagaId, sagaEntity.SagaType,
+                        stepDef.StepType.Name, i, SagaStepStatus.Continue, stepEx, SagaLogLevel.Error);
+
+                    _telemetry.RecordException(stepActivity, stepEx);
+                    throw; // Re-throw to trigger saga compensation
+                }
 
                 // save the possibly updated context after step execution
                 // we keep ContextData in memory for a small amount of time
@@ -205,6 +251,11 @@ namespace OrchestratR.Orchestration
                     // Step needs external event. Mark saga as Awaiting and stop execution.
                     sagaEntity.Status = SagaStatus.Awaiting;
                     await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+                    _telemetry.LogSagaEvent(SagaEventType.StatusChanged, sagaEntity.SagaId, sagaEntity.SagaType,
+                        SagaStatus.Awaiting, SagaLogLevel.Information,
+                        $"Saga paused - waiting for external event after step: {stepDef.StepType}");
+
                     return; // Return early, saga will resume later
                 }
 
@@ -221,8 +272,11 @@ namespace OrchestratR.Orchestration
             sagaEntity.Status = SagaStatus.Completed;
             sagaEntity.CurrentStepIndex = _config.Steps.Count; // mark index past the last step
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
-        }
 
+            _telemetry.LogSagaEvent(SagaEventType.Completed, sagaEntity.SagaId, sagaEntity.SagaType,
+                SagaStatus.Completed, SagaLogLevel.Information,
+                $"Saga completed successfully after {_config.Steps.Count} steps");
+        }
 
         /// <summary>
         /// Handles saga failure by initiating compensation for all executed steps.
@@ -233,6 +287,10 @@ namespace OrchestratR.Orchestration
             sagaEntity.Status = SagaStatus.Compensating;
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
+            _telemetry.LogSagaEvent(SagaEventType.CompensationStarted, sagaEntity.SagaId, sagaEntity.SagaType,
+                SagaStatus.Compensating, SagaLogLevel.Warning,
+                $"Starting compensation due to failure at step index: {sagaEntity.CurrentStepIndex}");
+
             await ExecuteCompensationAsync(sagaEntity, cancellationToken);
 
             // After attempting compensation of all executed steps:
@@ -241,6 +299,9 @@ namespace OrchestratR.Orchestration
             // For simplicity, we'll mark as Compensated since we attempted best effort rollback.
             sagaEntity.CurrentStepIndex = 0;
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
+
+            _telemetry.LogSagaEvent(SagaEventType.CompensationCompleted, sagaEntity.SagaId, sagaEntity.SagaType,
+                SagaStatus.Compensated, SagaLogLevel.Information, "Saga compensation completed");
 
             // Rethrow or swallow exception depending on desired behavior.
             // Here, we swallow after compensation, as the saga is considered handled (Compensated).
@@ -260,15 +321,26 @@ namespace OrchestratR.Orchestration
             // Compensate in reverse order for all executed steps
             for (int j = lastExecutedIndex; j >= 0; j--)
             {
+                var stepDef = _config.Steps[j];
+
                 try
                 {
                     // Load latest context (it might have been modified by partial execution or prior compensation)
                     var context = DeserializeContext(sagaEntity.ContextData);
-                    var stepDef = _config.Steps[j];
                     var step = (ISagaStep<TContext>)_provider.GetRequiredService(stepDef.StepType);
+
+                    _telemetry.LogStepEvent(StepEventType.Started, sagaEntity.SagaId, sagaEntity.SagaType,
+                        stepDef.StepType.Name, j, SagaStepStatus.Continue, SagaLogLevel.Information,
+                        $"Starting compensation for step: {stepDef.StepType.Name}");
+
                     // TODO: Think if we need to pass the exception to the compensation step
                     // TODO: Think if we need to apply any policies during compensation
                     await step.CompensateAsync(context, cancellationToken);
+
+                    _telemetry.LogStepEvent(StepEventType.Compensated, sagaEntity.SagaId, sagaEntity.SagaType,
+                        stepDef.StepType.Name, j, SagaStepStatus.Continue, SagaLogLevel.Information,
+                        $"Step compensation completed: {stepDef.StepType.Name}");
+
                     // Optionally update context if compensation changes it, then save
                     sagaEntity.ContextData = SerializeContext(context);
                     sagaEntity.CurrentStepIndex = j; // Update to the last compensated step index
@@ -277,6 +349,9 @@ namespace OrchestratR.Orchestration
                 catch (Exception compEx)
                 {
                     // Compensation for a step failed. Log the error and continue attempting to compensate earlier steps.
+                    _telemetry.LogStepEvent(StepEventType.CompensationFailed, sagaEntity.SagaId, sagaEntity.SagaType,
+                        stepDef.StepType.Name, j, SagaStepStatus.Continue, compEx, SagaLogLevel.Error);
+
                     // (In a real system, you might want to record this in sagaEntity as well.)
                     Console.Error.WriteLine($"Compensation step {j} failed: {compEx}");
                 }
@@ -313,6 +388,10 @@ namespace OrchestratR.Orchestration
             // Increase current step index
             sagaEntity.CurrentStepIndex++;
 
+            _telemetry.LogSagaEvent(SagaEventType.StatusChanged, sagaEntity.SagaId, sagaEntity.SagaType,
+                SagaStatus.InProgress, SagaLogLevel.Information,
+                "Saga resumed from Awaiting status - continuing to next step");
+
             await HandleInProgressResumeAsync(sagaEntity, activity, cancellationToken);
         }
 
@@ -329,6 +408,10 @@ namespace OrchestratR.Orchestration
         /// </summary>
         private async Task HandleCompensatingResumeAsync(SagaEntity sagaEntity, Activity? activity, CancellationToken cancellationToken)
         {
+            _telemetry.LogSagaEvent(SagaEventType.CompensationStarted, sagaEntity.SagaId, sagaEntity.SagaType,
+                SagaStatus.Compensating, SagaLogLevel.Information,
+                "Resuming saga compensation from previous interruption");
+
             await ExecuteCompensationAsync(sagaEntity, cancellationToken);
 
             // After attempting compensation of all executed steps:
@@ -338,8 +421,9 @@ namespace OrchestratR.Orchestration
             sagaEntity.CurrentStepIndex = 0;
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
+            _telemetry.LogSagaEvent(SagaEventType.CompensationCompleted, sagaEntity.SagaId, sagaEntity.SagaType,
+                SagaStatus.Compensated, SagaLogLevel.Information, "Saga compensation resumed and completed");
         }
-
 
         #endregion Resume Handlers
 
