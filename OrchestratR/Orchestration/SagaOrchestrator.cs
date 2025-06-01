@@ -58,6 +58,7 @@ namespace OrchestratR.Orchestration
 
             // Immediately mark as InProgress and update (since we are about to execute)
             sagaEntity.Status = SagaStatus.InProgress;
+            sagaEntity.CurrentStepIndex = 0;
             await _sagaStore.UpdateAsync(sagaEntity, cancellationToken);
 
             // Log status change to InProgress
@@ -157,8 +158,10 @@ namespace OrchestratR.Orchestration
             try
             {
                 await ExecuteForwardStepsAsync(sagaEntity, cancellationToken);
-                await HandleSagaCompletionAsync(sagaEntity, cancellationToken);
-                _telemetry.MarkCompleted(activity);
+                if (sagaEntity.Status == SagaStatus.Completed)
+                {
+                    _telemetry.MarkCompleted(activity);
+                }
             }
             catch (OperationCanceledException ex)
             {
@@ -261,13 +264,7 @@ namespace OrchestratR.Orchestration
 
                 // result was Continue, so loop will move to next step
             }
-        }
 
-        /// <summary>
-        /// Marks saga as completed when all steps have been executed successfully.
-        /// </summary>
-        private async Task HandleSagaCompletionAsync(SagaEntity sagaEntity, CancellationToken cancellationToken)
-        {
             // All steps completed successfully
             sagaEntity.Status = SagaStatus.Completed;
             sagaEntity.CurrentStepIndex = _config.Steps.Count; // mark index past the last step
