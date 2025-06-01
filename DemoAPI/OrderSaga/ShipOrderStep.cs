@@ -32,7 +32,7 @@ namespace DemoAPI.OrderSaga
             bool x = false;
             if (x)
             {
-                throw new Exception("Inventory reservation failed.");
+                throw new Exception("Shipment failed.");
             }
         }
     }

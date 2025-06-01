@@ -1,32 +1,47 @@
 using DemoAPI.OrderSaga;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using OrchestratR.Core;
-using OrchestratR.Persistence;
 using OrchestratR.Recovery;
 using OrchestratR.Registration;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Resources;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
+
+// Add logging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("DemoAPI"))
+    .WithTracing(tracing => tracing
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddSource("OrchestratR")
+        //.AddConsoleExporter()
+        );
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-
 builder.Services.AddSagaInfrastructure(options =>
 {
-    options.UseEfCore(db =>
-        db.UseSqlServer("Server=DESKTOP-NBMOCEP\\SQLEXPRESS01; Database=SagaDb;Trusted_Connection=True;Encrypt=False",
-                        x => x.MigrationsAssembly(SagaInfrastructureOptions.GetMigrationsAssembly())));
+    options
+        .UseEfCore(db => db.UseSqlServer(
+            "Server=DESKTOP-NBMOCEP\\SQLEXPRESS01;" +
+            "Database=SagaDb;Trusted_Connection=True;Encrypt=False",
+            x => x.MigrationsAssembly(SagaInfrastructureOptions.GetMigrationsAssembly())))
+        .UseTracing();
 });
 
 builder.Services.AddSaga<OrderSagaContext>()
-                .WithStep<ReserveInventoryStep>(x =>x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
-                .WithStep<ProcessPaymentStep>(x => x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
-                .WithStep<ShipOrderStep>(x => x.WithTimeout(TimeSpan.FromSeconds(500)).WithRetry(3))
+                .WithStep<ReserveInventoryStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(3))
+                .WithStep<ProcessPaymentStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(3))
+                .WithStep<ShipOrderStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(3))
                 .Build();
 
 builder.Services.AddHostedService<SagaRecoveryService>();
