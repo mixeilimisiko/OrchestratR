@@ -4,6 +4,7 @@ using OrchestratR.Recovery;
 using OrchestratR.Registration;
 using OpenTelemetry.Trace;
 using OpenTelemetry.Resources;
+using DemoAPI.OrderSagaSync;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,6 +29,10 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddTransient<IInventoryServiceSync, InventoryServiceSync>();
+builder.Services.AddTransient<IPaymentServiceSync, PaymentServiceSync>();
+builder.Services.AddTransient<IShippingServiceSync, ShippingServiceSync>();
+
 builder.Services.AddSagaInfrastructure(options =>
 {
     options
@@ -43,6 +48,12 @@ builder.Services.AddSaga<OrderSagaContext>()
                 .WithStep<ProcessPaymentStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(3))
                 .WithStep<ShipOrderStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(3))
                 .Build();
+
+builder.Services.AddSaga<OrderSagaSyncContext>()
+    .WithStep<ReserveInventorySyncStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(2))
+    .WithStep<ProcessPaymentSyncStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(2))
+    .WithStep<ShipOrderSyncStep>(x => x.WithTimeout(TimeSpan.FromMilliseconds(5000)).WithRetry(2))
+    .Build();
 
 builder.Services.AddHostedService<SagaRecoveryService>();
 
