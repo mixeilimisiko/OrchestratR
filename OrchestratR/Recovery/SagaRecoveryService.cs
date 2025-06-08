@@ -34,11 +34,11 @@ namespace OrchestratR.Recovery
                 var sagasToResume = new List<SagaEntity>();
                 foreach (var status in incompleteStatuses)
                 {
-                    var sagas = await sagaStore.FindByStatusAsync(status);
+                    var sagas = await sagaStore.FindByStatusAsync(status, stoppingToken);
                     sagasToResume.AddRange(sagas);
                 }
 
-                if (!sagasToResume.Any())
+                if (sagasToResume.Count <= 0)
                     return; // no sagas to recover
 
                 // Get all orchestrators registered
@@ -57,7 +57,7 @@ namespace OrchestratR.Recovery
                             continue;
                         }
                         Console.WriteLine($"Resuming saga {saga.SagaId} of type {saga.SagaType}, status {saga.Status}...");
-                        await orchestrator.ResumeAsync(saga);
+                        await orchestrator.ResumeAsync(saga, CancellationToken.None);
                     }
                     catch (Exception ex)
                     {

@@ -10,47 +10,63 @@ using OrchestratR.Recovery;
 
 namespace OrchestratR.Registration
 {
+     /// <summary>
+    /// Fluent builder for registering a saga and its steps into the DI container.
+    /// </summary>
+    /// <typeparam name="TContext">The concrete <see cref="SagaContext"/> type for this saga.</typeparam>
     public class SagaBuilder<TContext> where TContext : SagaContext, new()
     {
         private readonly IServiceCollection _services;
-        private readonly List<SagaStepDefinition<TContext>> _steps = [];
+        private readonly List<SagaStepDefinition<TContext>> _steps = new();
         private bool _enableRecovery;
 
+        /// <summary>
+        /// Creates a new <see cref="SagaBuilder{TContext}"/> backed by the given service collection.
+        /// </summary>
+        /// <param name="services">The DI service collection to register saga components into.</param>
         internal SagaBuilder(IServiceCollection services)
         {
             _services = services;
         }
 
-        public SagaBuilder<TContext> WithStep<TStep>(Action<StepBuilder<TContext, TStep>>? configure = null) where TStep : class,ISagaStep<TContext>
+        /// <summary>
+        /// Adds a step of type <typeparamref name="TStep"/> to the saga, with optional retry/timeout configuration.
+        /// </summary>
+        /// <typeparam name="TStep">The implementation of <see cref="ISagaStep{TContext}"/> to execute.</typeparam>
+        /// <param name="configure">
+        /// Optional callback to configure policies on the step via a <see cref="StepBuilder{TContext, TStep}"/>.
+        /// </param>
+        /// <returns>The same <see cref="SagaBuilder{TContext}"/> instance for chaining.</returns>
+        public SagaBuilder<TContext> WithStep<TStep>(Action<StepBuilder<TContext, TStep>>? configure = null)
+            where TStep : class, ISagaStep<TContext>
         {
-            // Create a new step definition for this step type
             var stepDef = new SagaStepDefinition<TContext>(typeof(TStep));
-
-            // Register the step implementation type as transient in DI
             _services.AddTransient<TStep>();
 
-            // Apply step-specific configuration if provided
             if (configure != null)
             {
                 var stepBuilder = new StepBuilder<TContext, TStep>(stepDef);
-                configure(stepBuilder);  // e.g., apply .WithRetry or .WithTimeout
-
-                // Compute policy and set it for this stepDefinition
-                var policy = new PollyStepPolicyExecutor<TContext>(stepDef.MaxRetries, stepDef.Timeout);
-                stepDef.PolicyExecutor = policy;
+                configure(stepBuilder);
+                stepDef.PolicyExecutor = new PollyStepPolicyExecutor<TContext>(stepDef.MaxRetries, stepDef.Timeout);
             }
-          
-            // Add the step definition to the saga's list (order is preserved)
+
             _steps.Add(stepDef);
             return this;
         }
 
+        /// <summary>
+        /// Enables background recovery for this saga via the <see cref="SagaRecoveryService"/>.
+        /// </summary>
+        /// <returns>The same <see cref="SagaBuilder{TContext}"/> instance for chaining.</returns>
         public SagaBuilder<TContext> WithRecovery()
         {
             _enableRecovery = true;
             return this;
         }
 
+        /// <summary>
+        /// Finalizes registration: wires up <see cref="SagaConfig{TContext}"/>, <see cref="SagaOrchestrator{TContext}"/>,
+        /// </summary>
         public void Build()
         {
             var serializerOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
@@ -68,7 +84,6 @@ namespace OrchestratR.Registration
                 contextTypeInfo = null;
             }
 
-            // Create saga configuration from the collected step definitions with serializer options
             var sagaConfig = new SagaConfig<TContext>
             {
                 Steps = _steps,
@@ -76,7 +91,6 @@ namespace OrchestratR.Registration
                 ContextTypeInfo = contextTypeInfo
             };
 
-            // Register the saga config as IOptions<T> so it can be injected
             _services.Configure<SagaConfig<TContext>>(options =>
             {
                 options.Steps = sagaConfig.Steps;
@@ -84,15 +98,11 @@ namespace OrchestratR.Registration
                 options.ContextTypeInfo = sagaConfig.ContextTypeInfo;
             });
 
-            // Register the SagaOrchestrator for this TContext as scoped
             _services.AddScoped<SagaOrchestrator<TContext>>();
-
-            // Also register it as ISagaOrchestrator for non-generic lookup (same instance in scope)
             _services.AddScoped<ISagaOrchestrator>(sp => sp.GetRequiredService<SagaOrchestrator<TContext>>());
 
             if (_enableRecovery)
             {
-                // Register the recovery service *only once* if not already registered
                 _services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, SagaRecoveryService>());
             }
         }

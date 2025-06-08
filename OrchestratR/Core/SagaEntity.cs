@@ -4,17 +4,40 @@ using System.ComponentModel.DataAnnotations;
 namespace OrchestratR.Core
 {
     /// <summary>
-    /// Persistent record of a saga's state, used by SagaStore implementations.
+    /// Persistent record of a saga's state, used by <see cref="ISagaStore"/> implementations.
     /// </summary>
     public class SagaEntity
     {
-        public Guid SagaId { get; set; }                // Unique identifier for the saga instance
-        public string SagaType { get; set; } = "";      // Name of the saga context/type (used to route to correct orchestrator)
-        public SagaStatus Status { get; set; }          // Current status of the saga
-        public int CurrentStepIndex { get; set; }       // Index of the next step to execute (or current step in progress)
-        public string ContextData { get; set; } = "";   // JSON serialized SagaContext
+        /// <summary>
+        /// Unique identifier for the saga instance.
+        /// </summary>
+        public Guid SagaId { get; set; }
 
-        [Timestamp]  // concurrency token
+        /// <summary>
+        /// The fully qualified name of the saga context/type.
+        /// Used to route to the correct orchestrator implementation.
+        /// </summary>
+        public string SagaType { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Current execution status of the saga.
+        /// </summary>
+        public SagaStatus Status { get; set; }
+
+        /// <summary>
+        /// Index of the next step to execute, or the step currently in progress.
+        /// </summary>
+        public int CurrentStepIndex { get; set; }
+
+        /// <summary>
+        /// JSON-serialized representation of the <see cref="SagaContext"/>.
+        /// </summary>
+        public string ContextData { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Concurrency token used to detect conflicting updates.
+        /// </summary>
+        [Timestamp]
         public byte[] RowVersion { get; set; } = [];
     }
 }

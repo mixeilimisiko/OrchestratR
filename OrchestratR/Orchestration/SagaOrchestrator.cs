@@ -73,6 +73,7 @@ namespace OrchestratR.Orchestration
         /// Resumes a saga by its ID, continuing from the point it left off.
         /// </summary>
         /// <param name="sagaId">The ID of the saga to resume.</param>
+        /// <param name="cancellationToken">Cancellation Token </param>
         public async Task ResumeAsync(Guid sagaId, CancellationToken cancellationToken = default)
         {
             var sagaEntity = await _sagaStore.FindByIdAsync(sagaId, cancellationToken)
@@ -95,6 +96,7 @@ namespace OrchestratR.Orchestration
         /// A lambda that modifies the existing context object in place. 
         /// Do not assign a new object to <c>ctx</c>, only change its properties.
         /// </param>
+        /// <param name="cancellationToken">Cancellation Token </param>
         /// <exception cref="KeyNotFoundException">Thrown if saga is not found.</exception>
         public async Task ResumeAsync(Guid sagaId, Action<TContext> patch, CancellationToken cancellationToken = default)
         {

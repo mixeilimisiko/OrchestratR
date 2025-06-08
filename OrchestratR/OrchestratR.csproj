@@ -5,6 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AnalysisLevel>latest-recommended</AnalysisLevel>
+	<PackageId>OrchestratR</PackageId>
+	<Version>1.0.0</Version>
+	<Authors>mixeilimisiko</Authors>
+	<Description>Fluent .NET saga orchestration with EF Core persistence, built-in OpenTelemetry tracing &amp; structured logging.</Description>
+	<PackageTags>saga orchestration efcore dotnet</PackageTags>
+	<PackageLicenseExpression>MIT</PackageLicenseExpression>
+	<RepositoryType>git</RepositoryType>
+	<RepositoryUrl>https://github.com/mixeilimisiko/OrchestratR</RepositoryUrl>
+	<GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
