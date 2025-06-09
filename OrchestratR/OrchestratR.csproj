@@ -14,6 +14,7 @@
 	<RepositoryType>git</RepositoryType>
 	<RepositoryUrl>https://github.com/mixeilimisiko/OrchestratR</RepositoryUrl>
 	<GenerateDocumentationFile>true</GenerateDocumentationFile>
+	<NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
