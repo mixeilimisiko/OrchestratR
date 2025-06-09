@@ -112,13 +112,8 @@ namespace OrchestratR.Orchestration
 
             // Deserialize context
             var context = DeserializeContext(sagaEntity.ContextData);
-            var originalRef = context;
             // Apply user-provided mutation to the context
             patch(context);
-
-            // Defensive check: ensure they didn't reassign context variable
-            if (!ReferenceEquals(context, originalRef))
-                throw new InvalidOperationException("Patch must not assign a new instance to the context. Modify the existing object.");
 
             // Serialize the updated context back to JSON
             sagaEntity.ContextData = SerializeContext(context);

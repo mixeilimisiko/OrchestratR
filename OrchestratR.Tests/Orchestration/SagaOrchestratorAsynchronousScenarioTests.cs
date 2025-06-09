@@ -191,57 +191,5 @@ namespace OrchestratR.Tests.Orchestration
                 deserializedContext!.StepBCalled.Should().BeTrue("SyncStepB should have set StepBCalled");
             }
         }
-
-        [Fact]
-        public async Task ResumeAsync_PatchAssignsNewContext_ThrowsInvalidOperationException()
-        {
-            /*================================  Arrange  =========================================*/
-
-            var dbName = $"PatchReassignDB_{Guid.NewGuid()}";
-
-            var services = new ServiceCollection();
-            services.AddDbContext<SagaDbContext>(opts =>
-                opts.UseInMemoryDatabase(dbName));
-            services.AddScoped<ISagaStore, EfCoreSagaStore>();
-            services.AddSingleton<ISagaTelemetry, NoSagaTelemetry>();
-
-            // Single no-op step so we can resume past it
-            services.AddSingleton<AsyncStepA>();
-            services.AddSingleton<ISagaStep<AsyncTestSagaContext>>(sp => sp.GetRequiredService<AsyncStepA>());
-
-            var cfg = new SagaConfig<AsyncTestSagaContext>
-            {
-                SerializerOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true },
-                ContextTypeInfo = null
-            };
-            cfg.Steps.Add(new SagaStepDefinition<AsyncTestSagaContext>(typeof(AsyncStepA)));
-            services.AddSingleton<IOptions<SagaConfig<AsyncTestSagaContext>>>(sp => Options.Create(cfg));
-
-            services.AddSingleton<SagaOrchestrator<AsyncTestSagaContext>>();
-
-            var provider = services.BuildServiceProvider();
-            var orchestrator = provider.GetRequiredService<SagaOrchestrator<AsyncTestSagaContext>>();
-            var store = (EfCoreSagaStore)provider.GetRequiredService<ISagaStore>();
-
-            /*================================  Act & Assert  =========================================*/
-
-            var initialContext = new AsyncTestSagaContext
-            {
-                StepACalled = false,
-                StepACompensated = false
-            };
-
-            var sagaId = await orchestrator.StartAsync(initialContext);
-
-            // This patch replaces the context instance entirely → should throw
-            Func<Task> act = () => orchestrator.ResumeAsync(sagaId, ctx => {
-                // BAD patch: replaces the reference
-                ctx = new AsyncTestSagaContext { StepAResult = "new" };
-            });
-
-            await act
-                .Should().ThrowAsync<InvalidOperationException>()
-                .WithMessage("Patch must not assign a new instance to the context*");
-        }
     }
 }
